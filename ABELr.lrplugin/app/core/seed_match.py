@@ -328,10 +328,16 @@ def _weighted_bands_per_band(
 # seeds matched on the same Calibration field before refusing the weighted
 # average and falling back to the nearest seed (cf. PLAN.md C2 — a `RedHue` of
 # +30 on one seed and -20 on another shouldn't produce an average that matches
-# no real seed). Provisional value chosen in the same order of magnitude as the
-# existing correction guards (`hsl._MAX_SAT=25`), for lack of real conflicting
-# seed data to settle it (cf. C3, unresolved).
-_CALIB_SPREAD_MAX = 25.0
+# no real seed). Settled 2026-07-25 (PLAN.md D2) against the real catalog (610
+# seeds, "Last soirée Abreu"): most matched k-sets already agree tightly
+# (median spread 0 on every field), and sweeping this threshold 0-100 against
+# real LOOCV ground truth shows MAE gets monotonically *worse* past ~2 on all
+# 7 fields (e.g. green_saturation MAE 2.04 @spread<=2 vs 2.58 @spread<=25, the
+# old provisional value) — weighted averaging only ever helps when seeds
+# already closely agree; once they diverge, the nearest seed is a better
+# predictor than any blend. 2.0 (not 0) keeps the boundary at "seeds agree
+# within one point," matching the existing close-values regression test.
+_CALIB_SPREAD_MAX = 2.0
 
 
 def _weighted_calib_field(matches: list[tuple[SeedVector, float]], field: str) -> float | None:

@@ -479,14 +479,28 @@ part of its post-Q MAE is expected quantization noise, not prediction error.
   differently-composed pool talking, not D1's effect — no valid comparison exists until the user
   re-runs Analyze over the catalog. Recorded here for continuity, not as a D1 verdict.
 
-- [ ] **D2 — Settle `_CALIB_SPREAD_MAX=25`** (`seed_match.py:251`) with the real spread data
+- [x] **D2 — Settle `_CALIB_SPREAD_MAX=25`** (`seed_match.py:251`) with the real spread data
   (S0 + real catalog) — replaces the provisional value that was never settled.
 
-  **Blocked on data, 2026-07-25**: same post-wipe pool (26 seeds) gives narrow, low-confidence
-  Calibration spreads (e.g. `RedHue`/`RedSaturation` span only 10 total, vs. 13-89 distinct
-  values across 421 seeds pre-wipe) — not enough signal to responsibly settle a threshold.
-  Holding until the catalog is re-analyzed (user must re-run Analyze/Preview/Apply live, cf. R's
-  same caveat) rather than fitting a guard value to a thin, temporary sample.
+  **Done 2026-07-25.** Unblocked mid-session: user re-ran Analyze live, catalog cache back to
+  610 real seeds (`SourceRAW`, up from the 26-seed post-wipe pool). S0 re-run on the full pool
+  shows the R/W/D/N work compounding for real: seeds-mode exposure MAE 4.38(pre-R)→2.86, WB Temp
+  123.62→104.72 — first genuine post-refactor baseline.
+
+  Real per-k-match-set spread (max-min among the k seeds matched on each Calibration field,
+  610 seeds): **median 0.0 on every one of the 7 fields**, p75 1-9, p90 5-15, p95 5-25 — only
+  0-2.5% of match-sets exceed the old 25 threshold at all. Swept `_CALIB_SPREAD_MAX` ∈
+  {0,0.5,1,2,3,4,5,7,10,15,20,25,30,40,60,100,∞} through the real LOOCV harness: **MAE
+  monotonically worsens past ~2 on every field** (mean-across-fields 1.413 @0-2 → 1.526 @5 →
+  1.618 @10 → 1.618 @25-old — i.e. the *old* default was already in the degraded regime).
+  Weighted averaging across matched seeds never beats trusting the single nearest seed on this
+  data; it only breaks even when the seeds already agree almost exactly. Settled on **2.0** (not
+  the technically-optimal 0) — sits inside the flat-MAE zone (0-2 all ≈1.41-1.42) while preserving
+  the existing `test_target_from_seeds_calibration_spread_guard_allows_close_values` regression
+  test's own stated boundary (spread=2 → still averages, not nearest-fallback). `seed_match.py`
+  comment updated in place (was citing C3/"no real conflicting data", now cites this real sweep).
+  `python -m pytest app/tests -q`: **208 passed**, no regressions, no new test needed (existing
+  spread-guard tests at spread=2 and spread=50 already bound the new threshold correctly).
 - [ ] **D3 — Adaptive k-means palette (conditional).** Only if D1 plateaus the MAE. Prior art:
   `tools/cluster_sharp_zone.py` (never concluded), timed here at ~15 ms/photo — negligible
   next to the Lr cost. Do not build before D1 is proven insufficient.
