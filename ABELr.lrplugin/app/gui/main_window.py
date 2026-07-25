@@ -48,6 +48,7 @@ from ..core import render_metrics
 from ..server.job_queue import job_queue
 from ..server.models import JobResult, JobType
 from .autocorrect_worker import AutoCorrectResult, AutoCorrectWorker
+from .fresh_render_worker import FreshRenderWorker
 from .neutral_preview_worker import NeutralPreviewWorker
 from .job_worker import JobWorker
 
@@ -62,7 +63,7 @@ class MainWindow(QMainWindow):
 
         self._worker: JobWorker | None = None
         self._check_worker: JobWorker | None = None
-        self._render_worker: JobWorker | None = None
+        self._render_worker: FreshRenderWorker | None = None
         self._auto_worker: AutoCorrectWorker | None = None
         self._neutral_worker: NeutralPreviewWorker | None = None
         self._apply_worker: JobWorker | None = None
@@ -390,13 +391,16 @@ class MainWindow(QMainWindow):
     def _fetch_fresh_render(self, photos: list) -> None:
         n = len(photos)
         self.status_label.setText(f"Fresh render of {n} photo(s) via Lightroom…")
-        timeout = max(30.0, n * 0.6)
-        payload = {
-            "photo_ids": [p.photo_id for p in photos],
-            "width": render_metrics.MEASURE_LONG_EDGE,
-            "height": render_metrics.MEASURE_LONG_EDGE,
-        }
-        self._render_worker = JobWorker(JobType.GET_THUMBNAILS, payload, timeout=timeout)
+        # Submitted in small get_thumbnails jobs rather than one job carrying every
+        # photo_id (FreshRenderWorker/fetch_thumbnails_chunked): bounds each job's
+        # blocking window inside the plugin's pollOnce dispatch and a timed-out
+        # chunk only drops that chunk to the passive-preview fallback, not the
+        # whole selection.
+        self._render_worker = FreshRenderWorker(
+            photos, render_metrics.MEASURE_LONG_EDGE, render_metrics.MEASURE_LONG_EDGE,
+        )
+        self._render_worker.progress.connect(self.status_label.setText)
+        self._render_worker.progress_count.connect(self._on_progress_count)
         self._render_worker.finished_result.connect(self._on_render_ready)
         self._render_worker.failed.connect(self._on_render_failed)
         self._render_worker.start()
@@ -408,10 +412,10 @@ class MainWindow(QMainWindow):
         self._thumb_paths = {}
         self._launch_measure(self._photos)
 
-    def _on_render_ready(self, result: JobResult) -> None:
+    def _on_render_ready(self, thumbnails: dict) -> None:
         self._thumb_paths = {
-            t.photo_id: t.thumbnail_path
-            for t in result.thumbnails
+            photo_id: t.thumbnail_path
+            for photo_id, t in thumbnails.items()
             if t.thumbnail_path
         }
         got = len(self._thumb_paths)
@@ -529,10 +533,13 @@ class MainWindow(QMainWindow):
         self.photo_list.clear()
         if diag is not None:
             mode_label = "embedded (neutral anchor)" if diag.mode == "embedded" else diag.mode
-            self.plan_summary_label.setText(
+            summary = (
                 f"Mode {mode_label} — {diag.n_seeds} seed(s), {diag.n_targets} target(s), "
                 f"{res.n_measured} measured, {res.n_skipped} not measurable."
             )
+            if diag.n_low_confidence:
+                summary += f"  ⚠ {diag.n_low_confidence} low-confidence match(es)"
+            self.plan_summary_label.setText(summary)
             for note in res.notes:
                 self.photo_list.addItem(f"  • {note}")
             for note in diag.notes:

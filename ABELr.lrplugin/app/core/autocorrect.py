@@ -129,6 +129,8 @@ class PlanDiagnostics:
     n_seeds: int
     n_targets: int
     notes: list[str] = field(default_factory=list)
+    n_low_confidence: int = 0       # seeds mode: matched photo(s) above the pool's
+                                     # own distance percentile (cf. PLAN.md N3/N4)
 
 
 def _f(dev: dict, key: str, default: float = 0.0) -> float:
@@ -461,7 +463,7 @@ def _plan_embedded(
                     photo_id=m.photo_id, asshot_rg=m.asshot_rg, asshot_bg=m.asshot_bg,
                     raw_median_l=m.raw_tone.median_l if m.raw_tone else None,
                     temperature=None, tint=None, preview_tone=None, preview_bands=None,
-                    profile_capture=m.profile_capture, ev100=m.ev100,
+                    raw_bands=m.raw_bands, profile_capture=m.profile_capture, ev100=m.ev100,
                 )
                 t = seed_match.match_target(query, seed_pool)
                 if t is None or not t.has_calibration():
@@ -505,7 +507,7 @@ def _plan_seeds(
                 asshot_bg=m.asshot_bg,
                 raw_median_l=m.raw_tone.median_l if m.raw_tone else None,
                 temperature=None, tint=None, preview_tone=None, preview_bands=None,
-                profile_capture=m.profile_capture, ev100=m.ev100,
+                raw_bands=m.raw_bands, profile_capture=m.profile_capture, ev100=m.ev100,
             )
             match_cache[m.photo_id] = seed_match.match_target(query, seed_pool)
         return match_cache[m.photo_id]
@@ -578,6 +580,19 @@ def _plan_seeds(
             dev_by_id[m.photo_id].update(_calib_develop_dict(t))
             n_calib += 1
         diag.notes.append(f"calib: {n_calib}/{len(usable)} photo(s) transplanted (k-NN seeds)")
+
+    # ---- Confidence gate (PLAN.md N3/N4) --------------------------------------
+    # match_cache is populated by whichever axis loop(s) ran above, keyed by
+    # photo_id — reused rather than re-matched.
+    threshold = seed_match.pool_confidence_threshold(seed_pool)
+    matched = [t for t in match_cache.values() if t is not None]
+    n_low = sum(1 for t in matched if seed_match.is_low_confidence(t, threshold))
+    diag.n_low_confidence = n_low
+    if n_low:
+        diag.notes.append(
+            f"{n_low}/{len(matched)} photo(s): low-confidence match "
+            f"(nearest seed further than the pool's usual spread)"
+        )
 
     adjustments = [
         PhotoAdjustment(photo_id=pid, develop=dev) for pid, dev in dev_by_id.items() if dev

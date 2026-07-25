@@ -455,10 +455,38 @@ part of its post-Q MAE is expected quantization noise, not prediction error.
 
 ## D — Colour-composition-aware comparison
 
-- [ ] **D1 — Add composition features to `seed_match._distance`.** Per-band `frac` (already
+- [x] **D1 — Add composition features to `seed_match._distance`.** Per-band `frac` (already
   cached in `hsl_sharp`/`hsl_global`) — zero new decode.
+
+  **Done 2026-07-25.** `SeedVector.raw_bands` (new field, RAW sharp-zone `BandStats` — same data
+  `PhotoMeasure.raw_bands` already carried for the HSL oversat guard) + 8 new `band_frac_<Name>`
+  keys folded into `_distance`/`_feature_scale` (refactored the repeated std-dev calc into
+  `_std`, `_band_frac_map` helper). Same missing-feature semantics as the existing 3 scalar
+  features: a seed with no RAW band measurement at all soft-skips the composition term instead
+  of being penalized. Wired into the real matching call sites, not just tests:
+  `build_seed_vector` (seed side, from `sr["bands"]`) and both `_plan_seeds`/`_plan_embedded`'s
+  query-`SeedVector` construction in `autocorrect.py` (target side, from the already-collected
+  `PhotoMeasure.raw_bands` — was computed but not fed to the k-NN before). 6 new tests in
+  `test_seed_match.py` (identical composition → distance unchanged; differing composition →
+  distance grows; one-sided-missing → soft-skip; `_feature_scale` band keys; k-NN tie-break
+  toward matching composition). `python -m pytest app/tests -q`: **201 passed** (was 195).
+
+  **S0 re-run — not a clean before/after signal.** The real catalog's cache got DROPPED and
+  recreated (as W3 predicted, `SCHEMA_VERSION` 4→5) since the last S0 run: `SourceRAW` now has
+  only **26** fully re-analyzed seeds (570 photos carry `is_seed=1` but only 26 have gone through
+  RAW analysis again post-wipe) — down from the 480-575 pool the earlier baselines were computed
+  on. MAE numbers moved (e.g. seeds-mode exposure 4.30→7.41) but that's the ~20× smaller,
+  differently-composed pool talking, not D1's effect — no valid comparison exists until the user
+  re-runs Analyze over the catalog. Recorded here for continuity, not as a D1 verdict.
+
 - [ ] **D2 — Settle `_CALIB_SPREAD_MAX=25`** (`seed_match.py:251`) with the real spread data
   (S0 + real catalog) — replaces the provisional value that was never settled.
+
+  **Blocked on data, 2026-07-25**: same post-wipe pool (26 seeds) gives narrow, low-confidence
+  Calibration spreads (e.g. `RedHue`/`RedSaturation` span only 10 total, vs. 13-89 distinct
+  values across 421 seeds pre-wipe) — not enough signal to responsibly settle a threshold.
+  Holding until the catalog is re-analyzed (user must re-run Analyze/Preview/Apply live, cf. R's
+  same caveat) rather than fitting a guard value to a thin, temporary sample.
 - [ ] **D3 — Adaptive k-means palette (conditional).** Only if D1 plateaus the MAE. Prior art:
   `tools/cluster_sharp_zone.py` (never concluded), timed here at ~15 ms/photo — negligible
   next to the Lr cost. Do not build before D1 is proven insufficient.
@@ -469,10 +497,17 @@ part of its post-Q MAE is expected quantization noise, not prediction error.
 
 ## N — Per-axis / per-band k-NN + confidence gate
 
-- [ ] **N1 — Generalize `_distance`** to accept a per-feature weight (`dict[str, float]`)
+- [x] **N1 — Generalize `_distance`** to accept a per-feature weight (`dict[str, float]`)
   instead of the current uniform weighting. Add `k_nearest_weighted(target, seeds, weights,
   k=None)`.
-- [ ] **N2 — Separate k-NN per HSL band.** Instead of one global match then averaging whichever
+
+  **Done 2026-07-25.** `_distance(target, seed, scale, weights=None)` multiplies each feature's
+  squared z-score term by `weights.get(feature_key, 1.0)` (scalar features + D1's 8
+  `band_frac_<Name>` keys, same keys either function operates on). `k_nearest_weighted(target,
+  seeds, weights, k=None)` added; `k_nearest` becomes a thin `k_nearest_weighted(..., None, ...)`
+  wrapper — byte-identical behavior confirmed by test. 3 new tests.
+
+- [x] **N2 — Separate k-NN per HSL band.** Instead of one global match then averaging whichever
   bands those seeds happen to have (current `_weighted_bands`), run a per-band k-NN adding that
   band's chroma/hue/frac as a distance feature — implements "if a photo renders reds better,
   pick it for reds." `target_from_seeds` moves from a single shared `matches` list to
@@ -480,14 +515,66 @@ part of its post-Q MAE is expected quantization noise, not prediction error.
   with the earlier decision: Calibration follows the overall scene, not a single band).
   Skin/subject approximation: heavy weighting on Red/Orange + a dedicated lightness window on
   `neutral_stats`, no segmentation needed (reserved for G1 if proven necessary).
-- [ ] **N3 — Confidence gate.** Expose the nearest seed's distance as `SeedTarget.confidence`
+
+  **Done 2026-07-25** (skin/subject approximation deferred — no evidence yet it's needed, same
+  gate as G1). `match_bands_per_band(target, seeds, k=None, profile_aware=True)` runs one
+  `k_nearest_weighted` per `BAND_NAMES` entry, weighting that band's own `band_frac_<Name>`
+  feature at `_BAND_KNN_SELF_WEIGHT=4.0` (base scalar features stay at weight 1.0 — a band match
+  still has to be scene-plausible, not composition-only). `match_target_per_band(...)` builds
+  Temp/Tint/Calibration/tone from the ordinary global `k_nearest` (via `target_from_seeds`, ⇒
+  same `confidence` semantics as N3) and overwrites only `.bands` with the per-band aggregation
+  (`_weighted_bands_per_band`, new — `_weighted_bands` refactored to share `_weighted_single_band`
+  with it instead of duplicating the by-name grouping logic). 4 new tests, incl. one asserting
+  Temperature stays on the global match even when the per-band winner would differ.
+
+  **Not wired into the live pipeline yet.** `autocorrect.py`'s HSL axis still calls `match_target`
+  (global match), matching D1's own caution: swapping the production default needs a real
+  before/after S0 comparison, and the catalog is still the same 26-seed post-wipe pool (cf. D2) —
+  not enough signal to tell whether per-band matching actually helps or just reshuffles noise.
+  `match_target_per_band` is available, tested, and ready to wire in once real data exists.
+
+- [x] **N3 — Confidence gate.** Expose the nearest seed's distance as `SeedTarget.confidence`
   (or `low_confidence: bool` + raw distance), threshold calibrated by percentile of the pool's
   internal distances (relative to the catalog), refined using S0 (which distance correlates
   with high LOOCV error).
-- [ ] **N4 — Surface confidence in the GUI.** Distinct visible line in `main_window.py`, not
+
+  **Done 2026-07-25.** `SeedTarget.confidence: float | None` (nearest matched seed's raw
+  distance, set by `target_from_seeds` — order-independent `min()` over the matches, not an
+  assumption that the caller pre-sorted). `pool_confidence_threshold(seeds, percentile=75.0)`:
+  each seed's own nearest-neighbor distance *within the pool*, at the given percentile — the
+  baseline "how spread out are seeds from each other normally," O(n²), documented as
+  call-once-per-batch (not per target photo). `is_low_confidence(target, threshold)`: `False` if
+  either side is unknown (too few seeds, or a hand-built `SeedTarget` with no confidence), else
+  `target.confidence > threshold`. 5 new tests. "Refined using S0" (which distance percentile
+  best correlates with real LOOCV error) still needs the reanalyzed catalog — same data blocker
+  as D2/N2, `percentile=75.0` is a starting default, not yet tuned against real error.
+
+- [x] **N4 — Surface confidence in the GUI.** Distinct visible line in `main_window.py`, not
   buried in the current scrolling notes list.
-  - Step-level test: re-run S0 in per-band mode — per-band MAE improved vs. single global
-    matching; the confidence flag correlates with the real error measured in LOOCV.
+
+  **Done 2026-07-25.** The fresh-render chunking refactor (`FreshRenderWorker`/
+  `fetch_thumbnails_chunked`, `gui/fresh_render_worker.py`) this step was deferred behind had
+  settled (coherent, wired, green) by the time this session picked the plan back up — landed as
+  part of the same uncommitted working tree, not re-litigated here.
+
+  `PlanDiagnostics.n_low_confidence: int` (new field) + a note, populated in `_plan_seeds`
+  (`autocorrect.py`): after the axis loops, `seed_match.pool_confidence_threshold(seed_pool)`
+  computed once (O(n²), matches the function's own "call once per batch" contract) and every
+  matched target in `match_cache` checked via `seed_match.is_low_confidence`. Embedded mode left
+  out (its only seed-matched axis, calib, is optional/off-by-default and secondary to N3's
+  seeds-mode focus — not worth the added branch without evidence it's needed). GUI:
+  `_on_plan_ready` appends `⚠ N low-confidence match(es)` to `plan_summary_label` (the existing
+  bold, non-scrolling summary line) when `n_low_confidence > 0` — flag is additive, doesn't block
+  the axis from running. 3 new tests in `app/tests/test_autocorrect_confidence.py` (tight
+  4-seed cluster + 1 outlier: a target near the cluster stays unflagged, a target far from
+  everything gets flagged, a <2-seed pool no-ops the gate since no threshold can be established).
+  `python -m pytest app/tests -q`: **215 passed** (was 212).
+
+  - Step-level test (whole N section): re-run S0 in per-band mode — per-band MAE improved vs.
+    single global matching; the confidence flag correlates with the real error measured in
+    LOOCV. **Still not run** — blocked on the same reanalyzed-catalog dependency as D2/N2 (only
+    26 seeds live post-wipe, cf. D1's note) — the GUI wiring is ready to compare against once the
+    user re-runs Analyze over the catalog, no code blocker remains.
 
 ---
 

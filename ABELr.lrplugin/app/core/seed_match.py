@@ -21,9 +21,17 @@ import math
 from dataclasses import dataclass
 
 from . import cache as cachemod
-from .render_metrics import BandStats, ToneStats, band_is_reliable
+from .render_metrics import BAND_NAMES, BandStats, ToneStats, band_is_reliable
 
 K_MAX = 3
+
+# Scalar features in the k-NN distance (cf. `_distance`/`_feature_scale`).
+_SCALAR_FEATURES = ("asshot_rg", "asshot_bg", "raw_median_l")
+# Per-band population fraction (RAW sharp zone, already cached in
+# `SourceRAW.hsl_sharp` — cf. PLAN.md D1) added as 8 extra distance features,
+# so two seeds with the same exposure/WB but a different colour composition
+# (e.g. a red-lit vs. blue-lit frame) no longer look identical to the k-NN.
+_BAND_FEATURE_PREFIX = "band_frac_"
 
 
 # Camera Calibration (the "Camera Calibration" panel): 7 flat settings, transplanted
@@ -49,6 +57,7 @@ class SeedVector:
     tint: float | None
     preview_tone: ToneStats | None          # seed's PreviewJPEG (exposure target)
     preview_bands: list[BandStats] | None   # seed's PreviewJPEG (HSL target)
+    raw_bands: list[BandStats] | None = None  # seed's RAW sharp-zone bands (composition, cf. D1)
     profile_capture: str | None = None      # camera creative profile (group filter)
     ev100: float | None = None              # scene context (not used in the distance)
     shadow_tint: float | None = None        # Calibration — cf. CALIB_FIELDS
@@ -78,6 +87,7 @@ class SeedTarget:
     blue_saturation: float | None
     n_matched: int
     seed_ids: list[str]
+    confidence: float | None = None  # nearest matched seed's raw distance (cf. PLAN.md N3)
 
     def has_calibration(self) -> bool:
         return any(getattr(self, f) is not None for f in CALIB_FIELDS)
@@ -111,6 +121,7 @@ def build_seed_vector(conn, uuid: str) -> SeedVector | None:
         tint=_f(dev, "Tint"),
         preview_tone=preview.tone if preview else None,
         preview_bands=preview.bands if preview else None,
+        raw_bands=sr.get("bands"),
         profile_capture=profile,
         ev100=sr.get("ev100"),
         shadow_tint=_f(dev, "ShadowTint"),
@@ -133,39 +144,82 @@ def build_seed_pool(conn) -> list[SeedVector]:
     return out
 
 
-def _distance(target: SeedVector, seed: SeedVector, scale: dict[str, float]) -> float:
-    """Normalized Euclidean distance (z-score) over (asshot_rg, asshot_bg, raw_median_l).
-    A feature missing on either side is ignored (no penalty)."""
+def _band_frac_map(bands: list[BandStats] | None) -> dict[str, float] | None:
+    """`{band_name: frac}` for a seed's RAW sharp-zone bands, or `None` if that
+    seed has no band measurement at all (soft-skipped in `_distance`, same
+    missing-feature semantics as the scalar features)."""
+    if bands is None:
+        return None
+    return {b.name: b.frac for b in bands}
+
+
+def _std(vals: list[float]) -> float:
+    """Population standard deviation, `1.0` if too few samples to be meaningful
+    (mirrors a no-op scale, same convention as the previous inline computation)."""
+    if len(vals) < 2:
+        return 1.0
+    mean = sum(vals) / len(vals)
+    var = sum((v - mean) ** 2 for v in vals) / len(vals)
+    return math.sqrt(var) or 1.0
+
+
+def _distance(
+    target: SeedVector,
+    seed: SeedVector,
+    scale: dict[str, float],
+    weights: dict[str, float] | None = None,
+) -> float:
+    """Normalized Euclidean distance (z-score) over the scalar features
+    (asshot_rg, asshot_bg, raw_median_l) plus, when both sides have a RAW band
+    measurement, the 8 per-band population fractions (colour composition —
+    cf. PLAN.md D1). A feature missing on either side is ignored (no penalty).
+
+    `weights` (cf. PLAN.md N1) multiplies a feature's squared z-score term —
+    `None`/absent key defaults to 1.0, i.e. the historical uniform distance."""
+    w = weights or {}
     acc = 0.0
-    for key in ("asshot_rg", "asshot_bg", "raw_median_l"):
+    for key in _SCALAR_FEATURES:
         tv, sv = getattr(target, key), getattr(seed, key)
         if tv is None or sv is None:
             continue
         s = scale.get(key) or 1.0
-        acc += ((tv - sv) / s) ** 2
+        acc += w.get(key, 1.0) * ((tv - sv) / s) ** 2
+
+    t_bands, s_bands = _band_frac_map(target.raw_bands), _band_frac_map(seed.raw_bands)
+    if t_bands is not None and s_bands is not None:
+        for name in BAND_NAMES:
+            key = _BAND_FEATURE_PREFIX + name
+            s = scale.get(key) or 1.0
+            acc += w.get(key, 1.0) * ((t_bands.get(name, 0.0) - s_bands.get(name, 0.0)) / s) ** 2
     return math.sqrt(acc)
 
 
 def _feature_scale(seeds: list[SeedVector]) -> dict[str, float]:
     """Standard deviation (per feature) of the seed pool — normalizes the Euclidean
-    distance so that features on very different scales (rg/bg ~0.1-3, L* ~0-100)
-    weigh comparably."""
+    distance so that features on very different scales (rg/bg ~0.1-3, L* ~0-100,
+    band frac 0-1) weigh comparably."""
     scale: dict[str, float] = {}
-    for key in ("asshot_rg", "asshot_bg", "raw_median_l"):
+    for key in _SCALAR_FEATURES:
         vals = [getattr(s, key) for s in seeds if getattr(s, key) is not None]
-        if len(vals) < 2:
-            scale[key] = 1.0
-            continue
-        mean = sum(vals) / len(vals)
-        var = sum((v - mean) ** 2 for v in vals) / len(vals)
-        scale[key] = math.sqrt(var) or 1.0
+        scale[key] = _std(vals)
+    band_maps = [_band_frac_map(s.raw_bands) for s in seeds]
+    for name in BAND_NAMES:
+        vals = [m.get(name, 0.0) for m in band_maps if m is not None]
+        scale[_BAND_FEATURE_PREFIX + name] = _std(vals)
     return scale
 
 
-def k_nearest(
-    target: SeedVector, seeds: list[SeedVector], k: int | None = None
+def k_nearest_weighted(
+    target: SeedVector,
+    seeds: list[SeedVector],
+    weights: dict[str, float] | None = None,
+    k: int | None = None,
 ) -> list[tuple[SeedVector, float]]:
-    """The k seeds closest to `target` (excluding target itself).
+    """The k seeds closest to `target` (excluding target itself), each distance
+    feature scaled by `weights.get(feature_key, 1.0)` on top of the usual
+    z-score normalization (cf. PLAN.md N1 — a uniform `weights=None`/`{}`
+    reproduces `k_nearest`'s behavior exactly). Used by the per-band k-NN
+    (N2) to make one band's own composition feature dominate its own match.
 
     `k` defaults to `min(K_MAX, max(1, n_seeds // 2))`. If the closest one is at
     a near-zero distance (exact match), only that one is returned.
@@ -180,10 +234,20 @@ def k_nearest(
     if k is None:
         k = min(K_MAX, max(1, len(pool) // 2))
     scale = _feature_scale(pool)
-    ranked = sorted(((s, _distance(target, s, scale)) for s in pool), key=lambda t: t[1])
+    ranked = sorted(
+        ((s, _distance(target, s, scale, weights)) for s in pool), key=lambda t: t[1]
+    )
     if ranked[0][1] < 1e-6:
         return [ranked[0]]
     return ranked[:k]
+
+
+def k_nearest(
+    target: SeedVector, seeds: list[SeedVector], k: int | None = None
+) -> list[tuple[SeedVector, float]]:
+    """Uniform-weight shortcut over `k_nearest_weighted` (all features at
+    weight 1.0) — the historical single global match."""
+    return k_nearest_weighted(target, seeds, None, k)
 
 
 def _circular_mean_deg(values: list[float]) -> float:
@@ -213,32 +277,51 @@ def _weighted_tone(matches: list[tuple[SeedVector, float]]) -> ToneStats | None:
     return ToneStats(**kwargs)
 
 
-def _weighted_bands(matches: list[tuple[SeedVector, float]]) -> list[BandStats] | None:
-    by_name: dict[str, list[tuple[BandStats, float]]] = {}
+def _weighted_single_band(
+    matches: list[tuple[SeedVector, float]], name: str
+) -> BandStats | None:
+    """Aggregates one named band across the matched seeds (1/distance weighting),
+    reliable occurrences only. `None` if no matched seed has a reliable reading
+    of that band."""
+    items = []
     for m, d in matches:
         if not m.preview_bands:
             continue
-        w = 1.0 / (d + 1e-6)
-        for b in m.preview_bands:
-            if not band_is_reliable(b):
-                continue
-            by_name.setdefault(b.name, []).append((b, w))
-    if not by_name:
+        b = next((b for b in m.preview_bands if b.name == name), None)
+        if b is None or not band_is_reliable(b):
+            continue
+        items.append((b, 1.0 / (d + 1e-6)))
+    if not items:
         return None
-    out: list[BandStats] = []
-    for name, items in by_name.items():
-        out.append(
-            BandStats(
-                name=name,
-                frac=_weighted([(b.frac, w) for b, w in items]) or 0.0,
-                median_hue=_circular_mean_deg([b.median_hue for b, _ in items]),
-                median_chroma=_weighted([(b.median_chroma, w) for b, w in items]) or 0.0,
-                median_sat=_weighted([(b.median_sat, w) for b, w in items]) or 0.0,
-                sat_clip_frac=_weighted([(b.sat_clip_frac, w) for b, w in items]) or 0.0,
-                median_l=_weighted([(b.median_l, w) for b, w in items]) or 0.0,
-            )
-        )
-    return out
+    return BandStats(
+        name=name,
+        frac=_weighted([(b.frac, w) for b, w in items]) or 0.0,
+        median_hue=_circular_mean_deg([b.median_hue for b, _ in items]),
+        median_chroma=_weighted([(b.median_chroma, w) for b, w in items]) or 0.0,
+        median_sat=_weighted([(b.median_sat, w) for b, w in items]) or 0.0,
+        sat_clip_frac=_weighted([(b.sat_clip_frac, w) for b, w in items]) or 0.0,
+        median_l=_weighted([(b.median_l, w) for b, w in items]) or 0.0,
+    )
+
+
+def _weighted_bands(matches: list[tuple[SeedVector, float]]) -> list[BandStats] | None:
+    """Every band's aggregate from a single shared match list (historical
+    behavior — whichever bands those seeds happen to carry reliably)."""
+    out = [b for name in BAND_NAMES if (b := _weighted_single_band(matches, name)) is not None]
+    return out or None
+
+
+def _weighted_bands_per_band(
+    band_matches: dict[str, list[tuple[SeedVector, float]]]
+) -> list[BandStats] | None:
+    """Like `_weighted_bands`, but each band is aggregated from its **own**
+    dedicated match list (cf. PLAN.md N2 — `match_bands_per_band`)."""
+    out = [
+        b
+        for name, matches in band_matches.items()
+        if (b := _weighted_single_band(matches, name)) is not None
+    ]
+    return out or None
 
 
 # Maximum tolerated divergence (slider points, -100..100 scale) between the k
@@ -286,6 +369,7 @@ def target_from_seeds(matches: list[tuple[SeedVector, float]]) -> SeedTarget | N
         blue_saturation=_weighted_calib_field(matches, "blue_saturation"),
         n_matched=len(matches),
         seed_ids=[m.photo_id for m, _ in matches],
+        confidence=min(d for _m, d in matches),  # nearest raw distance, order-independent
     )
 
 
@@ -303,6 +387,94 @@ def _filter_by_profile(target: SeedVector, seeds: list[SeedVector]) -> list[Seed
         return seeds
     same = [s for s in seeds if s.profile_capture == target.profile_capture]
     return same if same else seeds
+
+
+# Extra weight given to a band's own composition feature (cf. D1's
+# `band_frac_<Name>`) when running its dedicated per-band k-NN (N2) — seeds
+# must first resemble the target in that specific hue's population; the base
+# scalar features (exposure/WB) and other bands stay in the mix at weight 1.0
+# so the match doesn't ignore overall scene similarity entirely.
+_BAND_KNN_SELF_WEIGHT = 4.0
+
+
+def _band_weights(name: str) -> dict[str, float]:
+    return {_BAND_FEATURE_PREFIX + name: _BAND_KNN_SELF_WEIGHT}
+
+
+def match_bands_per_band(
+    target: SeedVector,
+    seeds: list[SeedVector],
+    k: int | None = None,
+    *,
+    profile_aware: bool = True,
+) -> dict[str, list[tuple[SeedVector, float]]]:
+    """Runs one dedicated k-NN per HSL band (cf. PLAN.md N2), instead of
+    reusing a single global match and averaging whichever bands those seeds
+    happen to carry — "if a photo renders reds better, pick it for reds"."""
+    pool = _filter_by_profile(target, seeds) if profile_aware else seeds
+    return {
+        name: k_nearest_weighted(target, pool, _band_weights(name), k) for name in BAND_NAMES
+    }
+
+
+def match_target_per_band(
+    target: SeedVector,
+    seeds: list[SeedVector],
+    k: int | None = None,
+    *,
+    profile_aware: bool = True,
+) -> SeedTarget | None:
+    """Like `match_target`, but `bands` comes from `match_bands_per_band` (N2)
+    instead of the single global match. Temperature/Tint/Calibration stay on
+    the global match — they follow the overall scene, not a single hue band
+    (cf. PLAN.md N2, same decision as the historical `target_from_seeds`).
+    `confidence` also stays the global match's nearest distance (the gate is
+    about trusting the overall scene match, not any one band)."""
+    pool = _filter_by_profile(target, seeds) if profile_aware else seeds
+    global_matches = k_nearest(target, pool, k)
+    base = target_from_seeds(global_matches)
+    if base is None:
+        return None
+    band_matches = {
+        name: k_nearest_weighted(target, pool, _band_weights(name), k) for name in BAND_NAMES
+    }
+    base.bands = _weighted_bands_per_band(band_matches)
+    return base
+
+
+def pool_confidence_threshold(seeds: list[SeedVector], percentile: float = 75.0) -> float | None:
+    """Confidence gate baseline (cf. PLAN.md N3): each seed's nearest-neighbor
+    distance *within the pool itself*, at `percentile`. A match whose nearest
+    seed is farther than this is landing in a sparser region than seeds
+    normally sit from each other — a signal to flag, not a hard cutoff.
+
+    Expensive-ish (O(n^2) over the pool) — call **once per batch** (e.g. once
+    per `plan()` run over a whole catalog selection), not per target photo."""
+    if len(seeds) < 2:
+        return None
+    scale = _feature_scale(seeds)
+    nearest = []
+    for s in seeds:
+        others = [o for o in seeds if o.photo_id != s.photo_id]
+        if not others:
+            continue
+        nearest.append(min(_distance(s, o, scale) for o in others))
+    if not nearest:
+        return None
+    ranked = sorted(nearest)
+    idx = min(len(ranked) - 1, max(0, round((percentile / 100.0) * (len(ranked) - 1))))
+    return ranked[idx]
+
+
+def is_low_confidence(target: SeedTarget, threshold: float | None) -> bool:
+    """`True` if `target`'s nearest matched seed is farther than `threshold`
+    (from `pool_confidence_threshold`). `False` if either side is unknown
+    (`threshold is None` — too few seeds to establish a baseline — or
+    `target.confidence is None`, which `target_from_seeds` never actually
+    produces, but a caller could hand-build a `SeedTarget` without one)."""
+    if threshold is None or target.confidence is None:
+        return False
+    return target.confidence > threshold
 
 
 def match_target_with_distance(
