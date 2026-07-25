@@ -55,20 +55,34 @@ forward only what a future step actually needs to read, not the narrative:
 W2 produced real WB/HSL responses but on thin evidence in both cases (see baseline above and
 `OLD_PLAN.md` W2 for the original numbers):
 
-- [ ] **CAL1 — Fill the 4 uncalibrated HSL bands.** Green/Blue/Purple/Magenta still run on the
-  nominal fallback on both profiles (`ILCE-7M4|IN`, `ILCE-7M4|Neutral`) — one dark event photo
-  can't exercise 8 hue bands. Re-run `tools/calibrate_hsl_response.py` against a reference
-  frame with real content in those bands, or explicitly accept the nominal fallback and record
-  why in the code comment (same class of decision as W4).
-- [ ] **CAL2 — Re-fit `ILCE-7M4|Neutral` WB response.** Current fit used `neutral_frac≈0.012`
-  (barely above `_MIN_NEUTRAL_FRAC=0.01`, Tint axis only 3/5 usable probes) — this profile
-  covers **904 of 930 photos** in the catalog. Find/shoot a better neutral reference, re-run
-  `tools/calibrate_wb_response.py`.
-- Both re-runs go through the MCP-client transport (a second process can't bind port 5000
-  alongside a running `app.main`) — pattern already written and working (see W2 in
-  `OLD_PLAN.md`).
-  - Step-level test: re-run S0 embedded branch — WB Temp/Tint MAE (175.67 K / 4.02 at last
-    measure) must improve, or the step reports honestly that it didn't.
+- [x] **CAL1 — Fill the 4 uncalibrated HSL bands.** Done 2026-07-25. Wrote
+  `app/tools/mcp_calibrate.py` (MCP-client transport — talks to the already-running
+  `app.main` over `/mcp` instead of starting a second FastAPI server, avoids the port-5000
+  conflict; same math as `calibrate_hsl_response.py`, `--photo-id` bypasses the Lr-GUI-selection
+  requirement since `render_probe` resolves by UUID regardless). Reference photos picked
+  programmatically by scanning cached `InCameraJPEG.hsl_global` band `frac` across the live
+  catalog (`Last soirée Abreu`, 669 cached photos) instead of guessing — this catalog turned out
+  to have real content in all 4 bands, unlike the single dark frame W2 had:
+  - **`ILCE-7M4|Neutral`** (904/930 photos): Green (SML04323, frac 0.30, n=5/5 all axes), Blue
+    (SML03442, frac 0.92, n=4-5/5), Purple (SML03634, frac 0.65, n=5/5), Magenta (SML03762,
+    frac 0.69, n=5/5). All 4 bands now calibrated.
+  - **`ILCE-7M4|IN`** (26 photos): Blue/Purple/Magenta from SML03359 (n=5/5 all axes). **Green
+    left on the nominal fallback** — confirmed zero photos with any Green-band pixels across
+    all 26 cached `IN` photos, this catalog genuinely has no candidate (same class of
+    evidence-based decision as W4).
+  - `git diff` confirms Red/Orange/Yellow/Aqua (already-calibrated bands) untouched on both
+    profiles. `python -m pytest app/tests -q`: 209 passed (data-only change).
+- [x] **CAL2 — Re-fit `ILCE-7M4|Neutral` WB response.** Done 2026-07-25, same script/session as
+  CAL1. Old fit: reference `SML04237`, `neutral_frac≈0.012`, Tint axis 3/5 usable probes. New
+  reference `SML04722` (picked by scanning cached `neutral_global.neutral_frac`, top hit
+  0.31 — 25x the old anchor): Temperature n=3/5 (2 probes still dropped below
+  `_MIN_NEUTRAL_FRAC` at the largest deltas, expected), **Tint n=5/5** (was 3/5).
+  `is_calibrated=True`. S0 embedded-mode WB metric not usable as before/after evidence here —
+  only 1 candidate resolves in that branch (`NeutralPreviewJPEG` cache has 4 rows total,
+  unrelated to this change), too thin to compare (n=1 either side).
+- Both driven via `app/tools/mcp_calibrate.py` (MCP-client transport) — kept as a real tool
+  (not a throwaway script) since the port-5000-conflict problem is structural, not one-off;
+  reusable for any future re-calibration on a live `app.main`.
 
 ---
 
@@ -77,24 +91,55 @@ W2 produced real WB/HSL responses but on thin evidence in both cases (see baseli
 Explicitly out of scope during T1-T6 (hygiene only, no bulk new tests). Baseline: 45% total
 coverage, 208 tests green.
 
-- [ ] **COV1 — `app/server/job_queue.py`** (32%): submit / prune / bridge-connected timing
-  paths untested.
-- [ ] **COV2 — `app/core/cache.py`** (79%, but only `develop_hash`/`style_hash`/`raw_signature`
-  exercised): `put_*`/`get_*` read/write round-trips + `_ensure_schema` version-bump behavior —
-  the DROP-and-recreate path that actually wiped the user's real cache at W3, with no direct
-  unit test today.
-- [ ] **COV3 — `app/core/render_metrics.py`** (61%): `band_stats`/`neutral_stats` core
-  measurement functions, only exercised indirectly today via other test files.
-- [ ] **COV4 — `app/core/autocorrect.py`** (85%): `_plan_seeds`'s tail (537-571) and
-  `_plan_embedded`'s divergence-diagnostic branch (338-341, 354) — the exact code path behind
-  the R-section crop/variant bug.
-- [ ] **COV5 — GUI workers, decision + closeEvent.** `autocorrect_worker.py` (16%),
-  `main_window.py` (10%), `neutral_preview_worker.py` (19%) — Qt/thread-heavy, essentially
-  untested; decide unit-test vs. accept-and-document. Folds in old plan's step 6: **confirmed
-  still missing** — no `closeEvent` anywhere in `app/gui/`, so workers are still not
-  `quit()`+`wait()`'d on close (orphaned QThreads). If accepted as GUI-manual-only, add the
-  `closeEvent` fix directly (small, mechanical) even without a Qt unit test — document the
-  validation as a smoke import + manual close, same honesty standard as the old plan's step 6.
+- [x] **COV1 — `app/server/job_queue.py`** (32%→99%). Done 2026-07-25:
+  `app/tests/test_job_queue.py` (14 tests) — submit/wait_result round-trip, saturation guard,
+  TTL pruning (evicts stale + keeps fresh), bridge heartbeat timing, next_pending/submit_result
+  lifecycle (ok/error/unknown-job), and a real-thread concurrency smoke test (Lock+Event across
+  threads — the class's actual reason to exist). Only line 139 uncovered (defensive skip of a
+  non-PENDING entry mid-dequeue). `python -m pytest app/tests -q`: 223 passed (was 209).
+- [x] **COV2 — `app/core/cache.py`** (79%→100%). Done 2026-07-25:
+  `app/tests/test_cache_roundtrip.py` (26 tests) — put_*/get_* round-trips for all 5 tables
+  (LightroomPicture/seeds, SourceRAW, InCameraJPEG, PreviewJPEG, NeutralPreviewJPEG), hash-match
+  vs hash-mismatch vs `_latest` (ignores hash), `is_seed` upsert preservation across
+  re-analysis, `commit=False` batching, `raw_signature` both branches, and the
+  `_ensure_schema` DROP-and-recreate path on a `SCHEMA_VERSION` bump (confirms old rows are
+  gone after — the exact W3 real-cache-wipe behavior, now under test). `python -m pytest
+  app/tests -q`: 249 passed (was 223).
+- [x] **COV3 — `app/core/render_metrics.py`** (61%→100%). Done 2026-07-25:
+  `app/tests/test_render_metrics_measure.py` (13 tests) — `tone_stats`/`neutral_stats`/
+  `band_stats`/`rgb_u8_to_hsv_hue_sat` on synthetic sRGB patches (solid gray, pure
+  red/green/blue, mixed half-red/half-blue), covering both degenerate-population fallback
+  branches (`tone_stats` all-highlight-clipped → reuses the unfiltered L* array;
+  `neutral_stats` zero neutral pixels on a saturated image → all-zero `NeutralStats`, not
+  NaN) plus the `mask` parameter on all three. `python -m pytest app/tests -q`: 262 passed
+  (was 249).
+- [x] **COV4 — `app/core/autocorrect.py`** (85%→99%). Done 2026-07-25:
+  `app/tests/test_autocorrect_plan_axes.py` (23 tests). Confirmed the real gap first
+  (`_plan_seeds`'s wb/hsl blocks and `_plan_embedded`'s expo/wb/hsl loops were never exercised
+  through `plan()` at all before this — only "expo"/"calib" axes were, via
+  `test_autocorrect_confidence.py`/`test_autocorrect_calib.py`/the S0 embedded-validation
+  tests). Covers: `_pair_for`'s sharp↔global fallback, the divergence diagnostic
+  (338-341/354), wb deviant+calibrated / deviant+uncalibrated / conforming / low-neutral-frac,
+  hsl deviant/matching bands in both modes, `_plan_seeds` wb refine-vs-no-model / no-match,
+  the usable-photo-count note, and the embedded calib-matched-but-no-calibration branch. Only
+  line 445 uncovered — `if d == 0: continue` in the embedded hsl loop, dead in practice since
+  `hsl.plan_hsl` already filters zero-delta keys before returning. `python -m pytest
+  app/tests -q`: 285 passed (was 262).
+- [x] **COV5 — GUI workers, decision + closeEvent.** Done 2026-07-25. Decision: **accept and
+  document** — `autocorrect_worker.py`/`main_window.py`/`neutral_preview_worker.py` stay
+  GUI-manual-only, not unit-tested (Qt state-machine + signal/slot heavy; a meaningful test
+  would need to mock `job_queue` signal emission through 3+ chained worker hops per flow —
+  disproportionate to the risk, same call as the old plan's step 6). What *was* fixed: no
+  `closeEvent` existed anywhere in `app/gui/` (confirmed absent again before touching it) —
+  workers were never `quit()`+`wait()`'d on window close (orphaned QThreads, "Destroyed while
+  thread is still running" on exit). Added `MainWindow.closeEvent` (`app/gui/main_window.py`)
+  joining all 7 tracked worker attributes with a 5s timeout each. Validated (no Qt unit test,
+  same honesty standard as the old plan's step 6): `test_smoke_import.py` already globs
+  `app/gui/*.py` so the edit doesn't break import; manually instantiated `MainWindow` under
+  `QT_QPA_PLATFORM=offscreen`, closed it with no worker running (no-op path) and with a real
+  `JobWorker` started against it (confirmed `isRunning()` False after `close()` — the join
+  path actually executes). `python -m pytest app/tests -q`: still 285 passed (no new tests
+  from this step, code-only + manual validation).
 
 ---
 

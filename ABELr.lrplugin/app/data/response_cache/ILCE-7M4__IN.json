@@ -38,19 +38,19 @@
       "dhue_dhue": 0.0
     },
     "Blue": {
-      "dchroma_dsat": 0.0,
-      "dl_dlum": 0.0,
-      "dhue_dhue": 0.0
+      "dchroma_dsat": 0.26586023086495053,
+      "dl_dlum": 0.3105924929714533,
+      "dhue_dhue": 0.1425956013293415
     },
     "Purple": {
-      "dchroma_dsat": 0.0,
-      "dl_dlum": 0.0,
-      "dhue_dhue": 0.0
+      "dchroma_dsat": 0.1478692256043114,
+      "dl_dlum": 0.01852463850925538,
+      "dhue_dhue": 0.07060157221493836
     },
     "Magenta": {
-      "dchroma_dsat": 0.0,
-      "dl_dlum": 0.0,
-      "dhue_dhue": 0.0
+      "dchroma_dsat": 0.09201927581047929,
+      "dl_dlum": 0.03560249038221102,
+      "dhue_dhue": 0.02724755099075476
     }
   }
 }

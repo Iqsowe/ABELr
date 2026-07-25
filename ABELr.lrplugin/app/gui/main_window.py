@@ -661,3 +661,20 @@ class MainWindow(QMainWindow):
         self._set_actions_enabled(True)
         self._progress_done()
         self.status_label.setText(f"Error: {message}")
+
+    def closeEvent(self, event) -> None:
+        """Stops every tracked QThread worker before the window closes.
+
+        Without this, a worker still running when the user closes the window
+        is destroyed mid-run (Qt logs "QThread: Destroyed while thread is
+        still running" and the app can crash on exit) — cf. PLAN.md COV5.
+        """
+        for worker in (
+            self._worker, self._check_worker, self._render_worker,
+            self._auto_worker, self._neutral_worker, self._apply_worker,
+            self._seed_worker,
+        ):
+            if worker is not None and worker.isRunning():
+                worker.quit()
+                worker.wait(5000)
+        super().closeEvent(event)
