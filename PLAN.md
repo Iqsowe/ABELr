@@ -40,17 +40,13 @@ forward only what a future step actually needs to read, not the narrative:
 
 ## DOC — Doc resync (no Lr, do first — cheapest, currently wrong on disk)
 
-- [ ] **DOC1 — Resync `documentation/ARCHITECTURE.md`.** §4 still claims "sharp = subject"
-  degrades at native resolution — superseded: R3/R5 measured the sharp/global gap now stable
-  512px→native (blur sigma scaled to the diagonal), and R2 puts every source (RAW/embedded
-  JPEG/Lr render) on the same 2048px grid before comparison. §8 (module map) predates
-  `core/quantize.py`, the `gpu_raw`/`_to_hwc_u8` downsample path, `tools/calibrate_wb_response.py`,
-  `gui/fresh_render_worker.py`.
-- [ ] **DOC2 — `app/tests/test_docs_consistency.py`.** Old plan's step 3 never landed
-  (confirmed absent — `app/tests/` has 20 files, none of them this). Parse `CLAUDE.md` +
-  `ARCHITECTURE.md`, assert every cited `core/xxx.py` / `gui/xxx.py` exists on disk, assert no
-  removed module is presented as alive. Keeps DOC1 from silently going stale again.
-  - Test: the file itself, green.
+- [x] **DOC1 — Resync `documentation/ARCHITECTURE.md`.** Done in `1d6f1ca` (dev CLAUDE and
+  ARCHITECTURE improve) — stale "sharp = subject degrades at native resolution" claim gone,
+  §3 module map now lists `core/quantize.py`, `gui/fresh_render_worker.py`, `render_metrics_gpu.py`
+  (`_to_hwc_u8`), etc. Verified 2026-07-25: content matches code on disk.
+- [x] **DOC2 — `app/tests/test_docs_drift.py`.** Landed alongside DOC1 (wraps
+  `app/tools/check_docs.py`: job list, MCP tools, cache tables, referenced paths, retired
+  phrasing). Confirmed present + green (`python -m pytest app/tests -q`, 209 passed).
 
 ---
 
