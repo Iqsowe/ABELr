@@ -578,6 +578,71 @@ part of its post-Q MAE is expected quantization noise, not prediction error.
 
 ---
 
+## T — Test suite hygiene (2026-07-25, off the main R/Q/W/D/N thread)
+
+Rework requested by the user: `app/tests/` had grown incrementally across H1/H3/Q6/R5/W5/D1/
+N1-N4 with duplicated synthetic-data factories (`_tone`/`_seed`/`_band`/`_neutral`/`_analysis`
+redefined per-file, divergent signatures) and a real latent bug — `test_seed_match.py` defined
+`_band` **twice** (positional 7-arg version, then a keyword one) — the second silently shadowed
+the first at import time; no assertion exercised the shadowed fields, so it never failed, but it
+was a trap for the next assertion added there.
+
+- [x] **T1 — `ABELr.lrplugin/pytest.ini`**: `testpaths`, the `gpu` marker (moved out of the
+  manual `pytest_configure` in `conftest.py`), `filterwarnings = error::DeprecationWarning`
+  (verified clean — no warnings tripped across the whole suite, torch/PySide6 included).
+- [x] **T2 — `pytest-cov`** added to `app/requirements.txt` (dev section, alongside `pytest`).
+  Baseline coverage captured before touching anything: **46% total**, 215 tests green.
+- [x] **T3 — Consolidated factories in `conftest.py`**: `make_tone`/`make_neutral`/`make_band`/
+  `make_analysis`/`make_seed`/`make_measure`, all keyword-only past the first 1-2 positional
+  args (closes off the exact shadowing failure mode above). 7 files converted:
+  `test_seed_match.py`, `test_autocorrect_calib.py`, `test_autocorrect_confidence.py`,
+  `test_autocorrect_helpers.py`, `test_hsl.py`, `test_validate_seed_matching.py`. Confirmed:
+  switching `test_seed_match.py`'s composition tests to the correct (previously-shadowed)
+  `_band` values did **not** flip any assertion — those tests only ever asserted on `frac`-driven
+  k-NN distances, not the shadowed chroma/sat fields, so the bug was real but inert.
+- [x] **T4 — Elagage**: removed `test_no_dead_modules.py`'s 3 tests guarding 4 long-deleted
+  modules (git already covers this; renamed the file to `test_smoke_import.py`, kept the one
+  test with real value — the import-crash guard over all `core/`+`gui/` modules). Removed
+  `test_measure_grid.py`'s constant-lock test (`MEASURE_LONG_EDGE == 2048`, tests nothing
+  behavioral — the real guard, `test_sharp_zone_tracks_subject_after_measurement_grid_downsample`,
+  already reads the constant instead of hardcoding it). Folded `test_snap_returns_int` into
+  `test_snap_nearest_multiple`.
+- [x] **T5 — Split `test_seed_match.py`** (was 300 lines / 4 sections): distance + k-NN +
+  calibration-spread logic stays in `test_seed_match.py` (23 tests); N1 (weighted k-NN) / N2
+  (per-band k-NN, not yet wired into `autocorrect.py` production — cf. N2's own note) / N3
+  (confidence gate) moved to new `test_seed_match_perband.py` (11 tests) — isolates the section
+  that will need rework whenever `match_target_per_band` gets wired in.
+- [x] **T6 — Docstrings reworded** invariant-first, PLAN-step-reference second (`test_hsl.py`,
+  `test_autocorrect_helpers.py`, `test_quantize.py`, `test_exposure.py`, `test_wb_model.py`,
+  `test_autocorrect_confidence.py`, `test_measure_grid.py`) — PLAN.md moves on, the tested
+  invariant doesn't.
+
+  **Result**: 215 → **208 tests** (−7, all deliberate per T4), suite green, GPU tests included
+  (real CUDA on this machine). Per-module coverage % identical before/after for every real
+  `core`/`gui`/`server` module (spot-checked the full `--cov=app` report) — the small total-%
+  dip (46%→45%) is fewer test-file statements being counted, not lost production coverage.
+
+- [ ] **T7 — Backlog, not this lot's scope.** Coverage-report modules flagged as thin/absent,
+  for a future dedicated pass (explicitly **not** written now — see this step's own git commit
+  message and the user's stated scope: hygiene + elagage + tooling only, no bulk new tests):
+  - `app/server/job_queue.py` — 32% (submit/prune/bridge-connected timing paths untested)
+  - `app/core/cache.py` — 79%, but only `develop_hash`/`style_hash`/`raw_signature` are
+    exercised; the `put_*`/`get_*` read/write round-trips and freshness (`_ensure_schema`
+    version bump behavior) have no direct unit test outside what `test_validate_seed_matching.py`
+    incidentally covers.
+  - `app/core/render_metrics.py` — 61% (`band_stats`/`neutral_stats` core measurement functions,
+    only exercised indirectly via `test_measure_grid.py`/`test_hsl.py`/`test_seed_match.py`).
+  - `app/core/autocorrect.py` — 85%, gaps concentrated in `_plan_seeds`'s tail (537-571) and
+    the `_plan_embedded` divergence-diagnostic branch (338-341, 354) — the exact code path
+    behind the R-section crop/variant bug.
+  - `app/gui/autocorrect_worker.py` (16%), `app/gui/main_window.py` (10%),
+    `app/gui/neutral_preview_worker.py` (19%) — GUI workers, essentially untested; not
+    necessarily worth unit-testing directly (Qt/thread-heavy), but flagged for a decision.
+  - `app/mcp/server.py`, `app/server/api.py`, `app/main.py`, most of `app/tools/*` — 0%,
+    largely CLI entry points / live-Lr-required scripts, expected to stay low.
+
+---
+
 ## G — AI segmentation (gated)
 
 - [ ] **G1 — Decision gate.** Do not build until S0 (re-run after R/W/D/N) shows residual error

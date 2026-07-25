@@ -46,6 +46,7 @@ scikit-learn
 # HTTP client (tests / mock plugin)
 requests
 
-# Dev / tests unitaires (fonctions pures — `pytest app/tests -q`). Sans GPU ni RAW ;
-# les tests marqués `gpu` sont skippés si CUDA absent.
+# Dev / unit tests (pure functions — `pytest app/tests -q`). No GPU or RAW needed;
+# tests marked `gpu` are skipped if CUDA is absent.
 pytest
+pytest-cov

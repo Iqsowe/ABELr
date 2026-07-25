@@ -1,8 +1,6 @@
-"""Exposure planning (`core.exposure`) — render-space L* -> Exposure2012.
-
-PLAN.md step W5: close the test-coverage gap on `plan_from_render` and the
-headroom safeguard (`_headroom_factor`, `_MAX_STEP_EV`) — previously untested
-(OLD_PLAN.md backlog item 4).
+"""Exposure planning (`core.exposure`) — render-space L* -> Exposure2012,
+including the headroom safeguard (`_headroom_factor`, `_MAX_STEP_EV`).
+Origin: PLAN.md step W5.
 """
 
 from __future__ import annotations

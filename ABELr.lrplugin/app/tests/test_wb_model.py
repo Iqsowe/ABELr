@@ -1,8 +1,6 @@
 """WB seed model (`core.wb_model`) — physical slope + seed-calibrated intercept,
-and the neutral-cast refinement (`refine_temp_tint`).
-
-PLAN.md step W5: close the test-coverage gap (OLD_PLAN.md backlog item 4) —
-`calibrate`/`refine_temp_tint`'s no-op branches were previously untested.
+and the neutral-cast refinement (`refine_temp_tint`), including its no-op
+branches. Origin: PLAN.md step W5.
 """
 
 from __future__ import annotations

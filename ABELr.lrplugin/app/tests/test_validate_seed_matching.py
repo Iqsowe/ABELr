@@ -15,20 +15,8 @@ from app.core import cache, response
 from app.core.pipeline import RenderAnalysis
 from app.core.render_metrics import NeutralStats, ToneStats
 from app.core.response import WBResponse
-from app.core.seed_match import SeedVector
+from app.tests.conftest import make_seed as _seed
 from app.tools import validate_seed_matching as vsm
-
-
-def _tone(median_l: float) -> ToneStats:
-    return ToneStats(median_l, median_l, median_l - 5, median_l + 5, 0.0, 0.0, 1.0)
-
-
-def _seed(pid, rg, bg, l, temp=5500.0, tint=0.0, tone_l=50.0, **calib):
-    return SeedVector(
-        photo_id=pid, asshot_rg=rg, asshot_bg=bg, raw_median_l=l,
-        temperature=temp, tint=tint, preview_tone=_tone(tone_l),
-        preview_bands=None, **calib,
-    )
 
 
 # --------------------------------------------------------------------------- #

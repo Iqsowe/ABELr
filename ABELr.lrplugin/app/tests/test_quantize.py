@@ -1,5 +1,5 @@
-"""PLAN step Q6 — `core.quantize.snap`: nearest-multiple rounding, half-step
-tie-breaking, boundary interaction with slider clamping.
+"""`core.quantize.snap` — nearest-multiple rounding, half-step tie-breaking,
+boundary interaction with slider clamping. Origin: PLAN.md step Q6.
 """
 
 from __future__ import annotations
@@ -24,11 +24,9 @@ from app.core import quantize
     ],
 )
 def test_snap_nearest_multiple(value, step, expected):
-    assert quantize.snap(value, step) == expected
-
-
-def test_snap_returns_int():
-    assert isinstance(quantize.snap(3.0, 5), int)
+    result = quantize.snap(value, step)
+    assert result == expected
+    assert isinstance(result, int)
 
 
 @pytest.mark.parametrize(

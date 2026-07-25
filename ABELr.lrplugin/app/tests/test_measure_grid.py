@@ -1,5 +1,6 @@
-"""PLAN.md step R5 — regression guard for the common measurement grid (R2) +
-resolution-proportional blur (R3).
+"""Regression guard: the sharp zone must track the subject's own lightness
+rather than collapse toward the whole-frame global, at the common measurement
+grid resolution.
 
 Deterministic, CPU-only (numpy + cv2), no GPU/RAW/Lr dependency: reproduces
 the exact failure mode from PLAN.md's R evidence ("sharp drifts... and
@@ -9,15 +10,13 @@ bright, textured subject on a smooth, dark background. Downsampled to the
 common grid exactly like the live pipeline (`render_metrics_gpu.
 downsample_to_measure_grid` on GPU; `cv2.INTER_AREA` here is the CPU-side
 reference — numerically equivalent area/box averaging), the sharp zone must
-still track the subject's own lightness rather than collapse toward the
-whole-frame global.
+still track the subject's own lightness. Origin: PLAN.md steps R2/R3/R5.
 """
 
 from __future__ import annotations
 
 import cv2
 import numpy as np
-import pytest
 
 from app.core import render_metrics, sharpness
 
@@ -80,11 +79,3 @@ def test_sharp_zone_tracks_subject_after_measurement_grid_downsample():
         f"sharp zone ({sharp.median_l:.1f} L*) drifted away from the true "
         f"subject lightness ({subject_only.median_l:.1f} L*)"
     )
-
-
-def test_measure_long_edge_is_the_documented_hypothesis():
-    # Locks the constant to the value PLAN.md's R5 evidence validated (single-
-    # photo + multi-photo scale->drift curve, near-zero drift at this scale).
-    # A future change to this constant is fine — but must be a deliberate
-    # re-validation (re-run PLAN.md's S0 harness + this test), not a silent drift.
-    assert render_metrics.MEASURE_LONG_EDGE == 2048

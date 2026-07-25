@@ -50,6 +50,16 @@ curl http://localhost:5000/health
 curl http://localhost:5000/status
 ```
 
+## Tests
+
+```bash
+python -m pytest app/tests -q                                                # all (from ABELr.lrplugin/)
+python -m pytest app/tests -q -m "not gpu"                                   # excludes GPU parity
+python -m pytest app/tests -q --cov=app --cov-report=term-missing:skip-covered  # + coverage report
+```
+
+Config lives in `ABELr.lrplugin/pytest.ini` (`testpaths`, the `gpu` marker, `filterwarnings`).
+
 ## Structure
 
 | Folder | Role |

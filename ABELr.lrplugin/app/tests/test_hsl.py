@@ -1,32 +1,16 @@
-"""PLAN step H1 — `raw_oversat` guard wired (anti-saturation over-correction).
+"""HSL band planning (`core.hsl`) — anti-saturation over-correction guard.
 
 `plan_band` must block a saturation reduction when the RAW explicitly denies
 oversaturation (`raw_oversat=False`), and behave as before (no blocking) when the
 RAW info is absent (`raw_oversat=None`, historical behavior) or confirmed
-(`raw_oversat=True`).
+(`raw_oversat=True`). Origin: PLAN.md step H1.
 """
 
 from __future__ import annotations
 
 from app.core.hsl import BandTarget, plan_band, raw_confirms_oversat
-from app.core.render_metrics import BandStats
 from app.core.response import BandResponse
-
-
-def _band(
-    name: str = "Red",
-    *,
-    frac: float = 0.5,
-    median_chroma: float = 40.0,
-    median_hue: float = 0.0,
-    sat_clip_frac: float = 0.0,
-    median_sat: float = 0.5,
-    median_l: float = 50.0,
-) -> BandStats:
-    return BandStats(
-        name=name, frac=frac, median_hue=median_hue, median_chroma=median_chroma,
-        median_sat=median_sat, sat_clip_frac=sat_clip_frac, median_l=median_l,
-    )
+from app.tests.conftest import make_band as _band
 
 
 def test_plan_band_reduces_saturation_when_excess_and_no_raw_info():
@@ -85,9 +69,9 @@ def test_raw_confirms_oversat_false_without_hard_clip():
 
 
 # --------------------------------------------------------------------------- #
-# H3 (PLAN) — embedded transplant (`BandTarget.embedded_raw=True`) caps
-# luminance/hue deltas more strictly (no "reduction only" guard possible on these
-# axes like there is for saturation).
+# Embedded transplant (`BandTarget.embedded_raw=True`) caps luminance/hue
+# deltas more strictly (no "reduction only" guard possible on these axes like
+# there is for saturation). Origin: PLAN.md step H3.
 # --------------------------------------------------------------------------- #
 def test_plan_band_embedded_raw_caps_luminance_delta_tighter():
     # In-camera JPEG target heavily shifted in L* (+80): without the dedicated cap,

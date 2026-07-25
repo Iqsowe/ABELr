@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from app.core import autocorrect as ac
+from app.tests.conftest import make_band
 
 
 @pytest.mark.parametrize(
@@ -89,35 +90,22 @@ def test_calib_develop_dict_writes_present_fields_clamped_and_snapped():
 
 
 # --------------------------------------------------------------------------- #
-# H1 (PLAN) — the `raw_oversat` guard is wired from the sharp-zone RAW of the
-# target photo (not the seeds) in both BandTarget constructors.
+# The `raw_oversat` guard is wired from the sharp-zone RAW of the target photo
+# (not the seeds) in both BandTarget constructors. Origin: PLAN.md step H1.
 # --------------------------------------------------------------------------- #
-def _raw_band(name="Red", sat_clip_frac=0.0, frac=0.5):
-    from app.core.render_metrics import BandStats
-
-    return BandStats(
-        name=name, frac=frac, median_hue=0.0, median_chroma=40.0,
-        median_sat=0.5, sat_clip_frac=sat_clip_frac, median_l=50.0,
-    )
-
-
 def test_embedded_band_targets_wires_raw_oversat_from_target_photo_raw():
     from app.core.pipeline import RenderAnalysis
-    from app.core.render_metrics import BandStats
 
-    t = RenderAnalysis(
-        tone=None, neutral=None,
-        bands=[BandStats("Red", 0.5, 0.0, 40.0, 0.5, 0.0, 50.0)],
-    )
+    t = RenderAnalysis(tone=None, neutral=None, bands=[make_band("Red")])
     bias = ac.ProfileBias(n=8)
 
     # RAW confirms (hard sat_clip_frac) → raw_oversat=True.
-    raw_bands = [_raw_band(sat_clip_frac=0.10)]
+    raw_bands = [make_band("Red", sat_clip_frac=0.10)]
     tgs = ac._embedded_band_targets(t, bias, ignore_bias=True, raw_bands=raw_bands)
     assert tgs["Red"].raw_oversat is True
 
     # RAW denies (no hard clip) → raw_oversat=False.
-    raw_bands = [_raw_band(sat_clip_frac=0.0)]
+    raw_bands = [make_band("Red", sat_clip_frac=0.0)]
     tgs = ac._embedded_band_targets(t, bias, ignore_bias=True, raw_bands=raw_bands)
     assert tgs["Red"].raw_oversat is False
 
@@ -128,17 +116,16 @@ def test_embedded_band_targets_wires_raw_oversat_from_target_photo_raw():
 
 def test_band_targets_from_seed_match_wires_raw_oversat_from_target_photo_raw():
     from app.core.seed_match import SeedTarget
-    from app.core.render_metrics import BandStats
 
     t = SeedTarget(
         temperature=None, tint=None, tone=None,
-        bands=[BandStats("Red", 0.5, 0.0, 40.0, 0.5, 0.0, 50.0)],
+        bands=[make_band("Red")],
         shadow_tint=None, red_hue=None, red_saturation=None,
         green_hue=None, green_saturation=None, blue_hue=None, blue_saturation=None,
         n_matched=1, seed_ids=["s"],
     )
 
-    raw_bands = [_raw_band(sat_clip_frac=0.10)]
+    raw_bands = [make_band("Red", sat_clip_frac=0.10)]
     tgs = ac._band_targets_from_seed_match(t, raw_bands=raw_bands)
     assert tgs["Red"].raw_oversat is True
 
@@ -147,18 +134,14 @@ def test_band_targets_from_seed_match_wires_raw_oversat_from_target_photo_raw():
 
 
 # --------------------------------------------------------------------------- #
-# H3 (PLAN) — `embedded_raw` marks raw-transplant targets from the in-camera
-# JPEG (`ignore_bias=True` mode), for the strict L*/hue cap on the `hsl.plan_band`
-# side.
+# `embedded_raw` marks raw-transplant targets from the in-camera JPEG
+# (`ignore_bias=True` mode), for the strict L*/hue cap on the `hsl.plan_band`
+# side. Origin: PLAN.md step H3.
 # --------------------------------------------------------------------------- #
 def test_embedded_band_targets_marks_embedded_raw_only_when_ignore_bias():
     from app.core.pipeline import RenderAnalysis
-    from app.core.render_metrics import BandStats
 
-    t = RenderAnalysis(
-        tone=None, neutral=None,
-        bands=[BandStats("Red", 0.5, 0.0, 40.0, 0.5, 0.0, 50.0)],
-    )
+    t = RenderAnalysis(tone=None, neutral=None, bands=[make_band("Red")])
     bias = ac.ProfileBias(n=8)
     bias.bands["Red"] = (0.0, 0.0, 0.0)
 
@@ -172,11 +155,10 @@ def test_embedded_band_targets_marks_embedded_raw_only_when_ignore_bias():
 
 def test_band_targets_from_seed_match_does_not_mark_embedded_raw():
     from app.core.seed_match import SeedTarget
-    from app.core.render_metrics import BandStats
 
     t = SeedTarget(
         temperature=None, tint=None, tone=None,
-        bands=[BandStats("Red", 0.5, 0.0, 40.0, 0.5, 0.0, 50.0)],
+        bands=[make_band("Red")],
         shadow_tint=None, red_hue=None, red_saturation=None,
         green_hue=None, green_saturation=None, blue_hue=None, blue_saturation=None,
         n_matched=1, seed_ids=["s"],
