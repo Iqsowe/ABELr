@@ -53,12 +53,14 @@ CACHE_FILENAME = "ABELr_cache.db"
 
 # **Schema** version (table structure). A structure change
 # triggers a DROP+recreate via `PRAGMA user_version`.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5  # bump: PLAN.md W3 — removed InCameraJPEG's 4 delta_* columns (dead, never read)
 
 # Salted into the freshness hashes (`raw_signature`, `style_hash`):
 # a change in the measurement algorithm (new global/sharp pairs, deltas…)
 # must invalidate all cached content without migration — bump when the computation changes.
-ANALYSIS_VERSION = "v6-calib-style-keys"  # bump: added Calibration keys to _STYLE_KEYS (the "calib" axis)
+ANALYSIS_VERSION = "v7-measure-grid"  # bump: PLAN.md R2/R3 — common measurement grid
+# (RAW/embedded-JPEG downsampled to render_metrics.MEASURE_LONG_EDGE before
+# sharp_mask/tone_stats/band_stats) + resolution-proportional pre-Laplacian blur.
 
 # "Style" subset of develop settings = everything that affects the NEUTRAL render
 # (`render_probe` probe: WB As Shot + Exposure2012=0 + **HSL 24 zeroed**, everything
@@ -202,10 +204,6 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             hsl_global        TEXT,
             mask_sharp_frac   REAL,
             profile_capture   TEXT,
-            delta_luma_median REAL,   -- vs SourceRAW.luma_median_sharp (same uuid)
-            delta_wb_cast_a   REAL,
-            delta_wb_cast_b   REAL,
-            delta_hsl         TEXT,   -- JSON list of per-band deltas
             cached_at         REAL
         );
 
@@ -531,26 +529,9 @@ def put_source_raw(
 
 
 # --------------------------------------------------------------------------- #
-# InCameraJPEG (in-camera JPEG: tone/neutral/bands global + sharp + deltas vs RAW)
+# InCameraJPEG (in-camera JPEG: tone/neutral/bands global + sharp)
 # --------------------------------------------------------------------------- #
-def _delta_bands_to_json(deltas: list[dict[str, Any]] | None) -> str | None:
-    return json.dumps(deltas) if deltas is not None else None
-
-
-def get_in_camera_jpeg(
-    conn: sqlite3.Connection, uuid: str, hash_jpeg: str
-) -> Optional[dict[str, Any]]:
-    """Cached InCameraJPEG row if `hash_jpeg` matches, otherwise None.
-
-    Returns a dict: `sharp`/`global` (RenderAnalysis), deltas, `mask_sharp_frac`,
-    `profile_capture`. The `tone`/`bands` key (sharp zone) is also exposed for
-    consumers that only use the embedded target.
-    """
-    row = conn.execute(
-        "SELECT * FROM InCameraJPEG WHERE uuid=? AND hash_jpeg=?", (uuid, hash_jpeg)
-    ).fetchone()
-    if row is None:
-        return None
+def _in_camera_jpeg_dict(row: sqlite3.Row) -> dict[str, Any]:
     sharp = _analysis_from_row(row, "sharp")
     return {
         "sharp": sharp,
@@ -559,11 +540,30 @@ def get_in_camera_jpeg(
         "bands": sharp.bands if sharp else None,
         "mask_sharp_frac": row["mask_sharp_frac"],
         "profile_capture": row["profile_capture"],
-        "delta_luma_median": row["delta_luma_median"],
-        "delta_wb_cast_a": row["delta_wb_cast_a"],
-        "delta_wb_cast_b": row["delta_wb_cast_b"],
-        "delta_hsl": json.loads(row["delta_hsl"]) if row["delta_hsl"] else None,
     }
+
+
+def get_in_camera_jpeg(
+    conn: sqlite3.Connection, uuid: str, hash_jpeg: str
+) -> Optional[dict[str, Any]]:
+    """Cached InCameraJPEG row if `hash_jpeg` matches, otherwise None.
+
+    Returns a dict: `sharp`/`global` (RenderAnalysis), `mask_sharp_frac`,
+    `profile_capture`. The `tone`/`bands` key (sharp zone) is also exposed for
+    consumers that only use the embedded target.
+    """
+    row = conn.execute(
+        "SELECT * FROM InCameraJPEG WHERE uuid=? AND hash_jpeg=?", (uuid, hash_jpeg)
+    ).fetchone()
+    return _in_camera_jpeg_dict(row) if row is not None else None
+
+
+def get_in_camera_jpeg_latest(conn: sqlite3.Connection, uuid: str) -> Optional[dict[str, Any]]:
+    """Latest known in-camera JPEG analysis for `uuid`, without checking the
+    freshness hash (offline validation on historical measurements — cf.
+    `get_source_raw_latest`, same rationale)."""
+    row = conn.execute("SELECT * FROM InCameraJPEG WHERE uuid=?", (uuid,)).fetchone()
+    return _in_camera_jpeg_dict(row) if row is not None else None
 
 
 def put_in_camera_jpeg(
@@ -575,18 +575,13 @@ def put_in_camera_jpeg(
     glob: RenderAnalysis | None = None,
     mask_sharp_frac: float | None = None,
     profile_capture: str | None = None,
-    delta_luma_median: float | None = None,
-    delta_wb_cast_a: float | None = None,
-    delta_wb_cast_b: float | None = None,
-    delta_hsl: list[dict[str, Any]] | None = None,
     commit: bool = True,
 ) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO InCameraJPEG
            (uuid, hash_jpeg, tone_sharp, neutral_sharp, hsl_sharp,
-            tone_global, neutral_global, hsl_global, mask_sharp_frac, profile_capture,
-            delta_luma_median, delta_wb_cast_a, delta_wb_cast_b, delta_hsl, cached_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tone_global, neutral_global, hsl_global, mask_sharp_frac, profile_capture, cached_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             uuid, hash_jpeg,
             _tone_to_json(sharp.tone) if sharp else None,
@@ -595,9 +590,7 @@ def put_in_camera_jpeg(
             _tone_to_json(glob.tone) if glob else None,
             _neutral_to_json(glob.neutral) if glob else None,
             _bands_to_json(glob.bands) if glob else None,
-            mask_sharp_frac, profile_capture,
-            delta_luma_median, delta_wb_cast_a, delta_wb_cast_b,
-            _delta_bands_to_json(delta_hsl), time.time(),
+            mask_sharp_frac, profile_capture, time.time(),
         ),
     )
     if commit:
@@ -662,6 +655,16 @@ def put_preview_jpeg(
                      sharp, glob, mask_sharp_frac, commit)
 
 
+def _neutral_preview_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "sharp": _analysis_from_row(row, "sharp"),
+        "glob": _analysis_from_row(row, "global"),
+        "asshot_temp": row["wb_asshot_temp"],
+        "asshot_tint": row["wb_asshot_tint"],
+        "mask_sharp_frac": row["mask_sharp_frac"],
+    }
+
+
 def get_neutral_preview(
     conn: sqlite3.Connection, uuid: str, hash_style: str
 ) -> Optional[dict[str, Any]]:
@@ -673,15 +676,15 @@ def get_neutral_preview(
     row = conn.execute(
         "SELECT * FROM NeutralPreviewJPEG WHERE uuid=? AND hash_style=?", (uuid, hash_style)
     ).fetchone()
-    if row is None:
-        return None
-    return {
-        "sharp": _analysis_from_row(row, "sharp"),
-        "glob": _analysis_from_row(row, "global"),
-        "asshot_temp": row["wb_asshot_temp"],
-        "asshot_tint": row["wb_asshot_tint"],
-        "mask_sharp_frac": row["mask_sharp_frac"],
-    }
+    return _neutral_preview_dict(row) if row is not None else None
+
+
+def get_neutral_preview_latest(conn: sqlite3.Connection, uuid: str) -> Optional[dict[str, Any]]:
+    """Latest known neutral render for `uuid`, without checking the freshness
+    hash (offline validation on historical measurements — cf. `get_source_raw_latest`,
+    same rationale)."""
+    row = conn.execute("SELECT * FROM NeutralPreviewJPEG WHERE uuid=?", (uuid,)).fetchone()
+    return _neutral_preview_dict(row) if row is not None else None
 
 
 def put_neutral_preview(

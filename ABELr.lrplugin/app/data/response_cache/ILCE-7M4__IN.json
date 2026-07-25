@@ -1,0 +1,56 @@
+{
+  "camera": "ILCE-7M4",
+  "profile": "IN",
+  "exposure": {
+    "ev": [],
+    "lstar": []
+  },
+  "wb": {
+    "da_dtemp": 0.5231834948062897,
+    "db_dtemp": 0.9924197196960449,
+    "da_dtint": 0.20788673814192776,
+    "db_dtint": -0.19288811716653897
+  },
+  "bands": {
+    "Red": {
+      "dchroma_dsat": 0.024029520556175996,
+      "dl_dlum": 0.02302312355965479,
+      "dhue_dhue": 0.03660309603470007
+    },
+    "Orange": {
+      "dchroma_dsat": 0.04466997958384583,
+      "dl_dlum": 0.03514807564871652,
+      "dhue_dhue": 0.0
+    },
+    "Yellow": {
+      "dchroma_dsat": 0.0,
+      "dl_dlum": 0.0,
+      "dhue_dhue": 0.0
+    },
+    "Green": {
+      "dchroma_dsat": 0.0,
+      "dl_dlum": 0.0,
+      "dhue_dhue": 0.0
+    },
+    "Aqua": {
+      "dchroma_dsat": 0.0,
+      "dl_dlum": 0.0,
+      "dhue_dhue": 0.0
+    },
+    "Blue": {
+      "dchroma_dsat": 0.0,
+      "dl_dlum": 0.0,
+      "dhue_dhue": 0.0
+    },
+    "Purple": {
+      "dchroma_dsat": 0.0,
+      "dl_dlum": 0.0,
+      "dhue_dhue": 0.0
+    },
+    "Magenta": {
+      "dchroma_dsat": 0.0,
+      "dl_dlum": 0.0,
+      "dhue_dhue": 0.0
+    }
+  }
+}

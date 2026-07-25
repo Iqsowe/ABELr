@@ -305,6 +305,22 @@ def _filter_by_profile(target: SeedVector, seeds: list[SeedVector]) -> list[Seed
     return same if same else seeds
 
 
+def match_target_with_distance(
+    target: SeedVector,
+    seeds: list[SeedVector],
+    k: int | None = None,
+    *,
+    profile_aware: bool = True,
+) -> tuple[SeedTarget | None, float | None]:
+    """Like `match_target`, also returns the nearest matched seed's raw distance
+    (confidence proxy — cf. PLAN.md N3; used by the S0 validation harness to
+    stratify LOOCV error by proximity to the seed pool)."""
+    pool = _filter_by_profile(target, seeds) if profile_aware else seeds
+    matches = k_nearest(target, pool, k)
+    nearest = matches[0][1] if matches else None
+    return target_from_seeds(matches), nearest
+
+
 def match_target(
     target: SeedVector,
     seeds: list[SeedVector],
@@ -313,5 +329,5 @@ def match_target(
     profile_aware: bool = True,
 ) -> SeedTarget | None:
     """Shortcut: (soft profile filter) + k nearest + aggregation into a single target."""
-    pool = _filter_by_profile(target, seeds) if profile_aware else seeds
-    return target_from_seeds(k_nearest(target, pool, k))
+    tgt, _dist = match_target_with_distance(target, seeds, k, profile_aware=profile_aware)
+    return tgt

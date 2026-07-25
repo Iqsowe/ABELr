@@ -104,7 +104,7 @@ cost — compute is not the limiting factor.
 
 ## S0 — Validation harness (prerequisite, reused after every following step)
 
-- [ ] **S0 — `app/tools/validate_seed_matching.py`.** Same pattern as
+- [x] **S0 — `app/tools/validate_seed_matching.py`.** Same pattern as
   `calibrate_hsl_response.py` but **read-only on `ABELr_cache.db`, no Lr connection needed**.
   - Seeds-mode LOOCV: hold out each seed, re-match against the remaining 479, compare the
     predicted target to ground truth = the held-out seed's `PreviewJPEG` (tone/bands) and real
@@ -115,6 +115,45 @@ cost — compute is not the limiting factor.
     limitation: LOOCV over-estimates intra-block generalization, cf. C3 in the previous plan).
   - Test: `python -m pytest app/tests -q` green (new pure, testable module) + the harness
     produces a numeric baseline, recorded in this file once obtained.
+
+  **Done 2026-07-25.** Read-only connection via `sqlite3.connect("file:...?mode=ro", uri=True)`
+  — deliberately bypasses `cache.open_cache`/`_ensure_schema`, which would DROP+recreate tables
+  on a schema-version mismatch (unacceptable on the user's live, real cache). Added two small
+  hash-free accessors to `cache.py` (`get_in_camera_jpeg_latest`, `get_neutral_preview_latest`,
+  mirroring the existing `get_source_raw_latest` pattern) and `seed_match.match_target_with_distance`
+  (exposes the nearest seed's raw distance alongside the aggregated target — `match_target` now
+  a thin wrapper over it). Embedded-mode validation reuses `autocorrect.plan(forced_embedded=True)`
+  directly (not a reimplementation) so it tracks the real pipeline logic exactly, including the R1
+  crop/divergence bug context.
+
+  **Baseline, real catalog** (`Last soirée Abreu`, 2026-07-25, pre-R/Q — continuous ground truth,
+  current scale-mismatch bug still present):
+
+  Seeds-mode LOOCV (509 usable seeds — grown from 480 at evidence-gathering time):
+  | Axis | MAE | n | near-half / far-half (nearest-seed distance) |
+  |---|---|---|---|
+  | Exposure (target L*) | 4.38 | 509 | 4.78 / 3.98 |
+  | WB Temperature (K) | 123.62 | 509 | 128.61 / 118.61 |
+  | WB Tint | 2.22 | 509 | — |
+  | Calibration (7 fields) | 0.99–4.48 (shadow_tint best, green_saturation worst) | 509 each | — |
+  | HSL chroma / lightness / hue (8 bands pooled) | 5.99 / 6.81 / 4.98° | 1273 | — |
+
+  Stratification signal is weak (near-half not clearly better than far-half on Exposure/Temp) —
+  consistent with the measurement-scale bug (R) dominating the error rather than genuine k-NN
+  match quality; worth re-checking after R.
+
+  Embedded-mode validation (396 photos with a cached `NeutralPreviewJPEG`, all resolved):
+  - Exposure2012: MAE 1.32 EV (large — expected, confirms the scale-mismatch bug: 345/396 photos
+    already flagged "global↔sharp ΔL* diverge >4L*").
+  - WB: 0 comparable predictions — `response_cache/` empty confirmed live (206 photos have a
+    real manual Custom WB edit with no calibrated response to compare against; diag separately
+    flags 3 as measurably deviant-and-uncorrected).
+  - HSL (24 keys, embedded mode): Saturation MAE 2.89, Luminance MAE 3.60, Hue MAE 1.89° (n=3168
+    each) — the `ignore_bias=True` raw transplant already tracks manual edits moderately well
+    even pre-R.
+
+  Read as a **pre-R/Q baseline**: re-run after R (scale fix) and after Q (quantization) to
+  measure their real impact, per each step's own test instructions.
 
 ---
 
@@ -135,29 +174,29 @@ rule applies to future computed corrections only, not to matching against past m
 S0's ground truth (`develop_json`) stays continuous, S0 must therefore be read knowing that
 part of its post-Q MAE is expected quantization noise, not prediction error.
 
-- [ ] **Q1 — Central snap helper.** New pure function (e.g. `core/quantize.py`, or a small
+- [x] **Q1 — Central snap helper.** New pure function (e.g. `core/quantize.py`, or a small
   addition next to `hsl._clamp`): `snap(value: float, step: float) -> int` =
   `step * round(value / step)`. All 5 write sites below replace their current `round(...)` with
   `snap(..., step)`. Snap is applied **after** clamping to slider bounds, never before — the
   bounds in play (-100/100, -150/150, 2000/12000) are themselves exact multiples of their
   respective steps (5, 5, 250), so snapping post-clamp can never push a value back out of range.
-- [ ] **Q2 — HSL.** Snap the two points where an *absolute* slider value is assembled and
+- [x] **Q2 — HSL.** Snap the two points where an *absolute* slider value is assembled and
   written (not the internal per-band delta in `hsl.plan_band`, which stays continuous — only
   the final written value snaps): `autocorrect.py:552` (`_plan_seeds`, `cur + d`) and
   `autocorrect.py:433` (`_plan_embedded`, `d` directly, HSL anchor = 0). Step = 5.
-- [ ] **Q3 — Calibration.** Snap in `_calib_develop_dict` (`autocorrect.py:247-264`), the
+- [x] **Q3 — Calibration.** Snap in `_calib_develop_dict` (`autocorrect.py:247-264`), the
   single function feeding both seeds mode (`autocorrect.py:564`) and embedded mode
   (`autocorrect.py:458`) — one call site to change covers both modes. Step = 5.
-- [ ] **Q4 — WB Temperature.** Snap at both final `Temperature=round(temp)` write sites:
+- [x] **Q4 — WB Temperature.** Snap at both final `Temperature=round(temp)` write sites:
   `_plan_embedded` (`autocorrect.py:406-410`) and `_plan_seeds` (`autocorrect.py:530-539`,
   after `wb_model.refine_temp_tint` if applied). Step = 250. `wb_model`'s internal ±600K delta
   clamp stays continuous — only the final absolute value snaps.
-- [ ] **Q5 — WB Tint.** Same two sites as Q4, alongside Temperature (`autocorrect.py:408` and
+- [x] **Q5 — WB Tint.** Same two sites as Q4, alongside Temperature (`autocorrect.py:408` and
   `:537`). Step = 5.
-- [ ] **Q6 — `app/tests/test_quantize.py`.** Pure function tests: nearest-multiple rounding
+- [x] **Q6 — `app/tests/test_quantize.py`.** Pure function tests: nearest-multiple rounding
   (positive/negative), half-step behaviour, boundary interaction (a value clamped to exactly
   -100/100/2000/12000/-150/150 must snap to itself, never drift outside the bound).
-- [ ] **Q7 — Update existing tests that assert specific numeric outputs.** At minimum
+- [x] **Q7 — Update existing tests that assert specific numeric outputs.** At minimum
   `test_autocorrect_helpers.py` (`_calib_develop_dict` cases) and any `test_autocorrect_calib.py`
   case asserting a precise non-grid value — expected values change once snapping lands;
   `test_seed_match.py` (operates on `SeedTarget`, upstream of snapping) should be unaffected.
@@ -165,25 +204,38 @@ part of its post-Q MAE is expected quantization noise, not prediction error.
     — document the MAE delta introduced purely by quantization (expected, not a regression) so
     later stages (R/W/D/N) are evaluated against a Q-aware baseline, not a stale continuous one.
 
+  **Done 2026-07-25.** `core/quantize.py` (`snap`) + 5 write sites in `autocorrect.py`, all
+  passed a pre-clamped value (seeds-mode WB Temperature had no explicit clamp before — added
+  one, matching Q1's own stated invariant). `python -m pytest app/tests -q`: **152 passed**
+  (was 129; +23 from `test_quantize.py` + Q6/Q7 additions), no regressions.
+
+  S0 re-run confirms the theory exactly: **seeds-mode LOOCV MAE is byte-for-byte unchanged**
+  (it compares `seed_match` output directly against ground truth, upstream of any write-site
+  snapping — as predicted). **Embedded-mode HSL MAE** (the only axis in S0 that goes through an
+  actual `autocorrect.plan()` write site) picks up the expected quantization noise:
+  Saturation 2.89→3.00, Luminance 3.60→3.62, Hue 1.89°→2.07° (n=3168 each). Exposure/Calibration/
+  WB unchanged in the embedded run (Exposure stays continuous by design; Calibration/WB embedded
+  MAE was already n=0/uncalibrated pre-Q, so quantization had nothing to bite on there yet).
+
 ---
 
 ## R — Fix the measurement scale (real bug + perf bonus)
 
-- [ ] **R1 — Common measurement grid, plugin side.** Send `width`/`height` in the
+- [x] **R1 — Common measurement grid, plugin side.** Send `width`/`height` in the
   `get_thumbnails` (`main_window.py:393`) and `render_probe`
   (`neutral_preview_worker.py:87-89`) payloads. No Lua change needed —
   `Thumbnails.lua:69-70,181-182` and `PollingLoop.lua:106-107,138-139` already accept these
   parameters.
-- [ ] **R2 — Downsample RAW/embedded JPEG to the same grid.** `cv2.resize` (INTER_AREA) before
+- [x] **R2 — Downsample RAW/embedded JPEG to the same grid.** `cv2.resize` (INTER_AREA) before
   `sharp_mask`/`tone_stats`/`band_stats`/`neutral_stats`, in `gpu_raw.py` (after demosaic) and
   the equivalent `embedded_jpeg`/`gpu_schedule` path. Full-res RAW stays decoded for other
   uses; only the measurement changes scale.
-- [ ] **R3 — Resolution-proportional pre-Laplacian blur.** Sigma relative to the image
+- [x] **R3 — Resolution-proportional pre-Laplacian blur.** Sigma relative to the image
   diagonal (not a fixed sigma like `tools/cluster_sharp_zone.py:20`, which isn't
   scale-invariant) — secondary robustness against the exact resolution chosen.
-- [ ] **R4 — Bump `ANALYSIS_VERSION`** (`cache.py:61`, `"v6-calib-style-keys"` → new value) +
+- [x] **R4 — Bump `ANALYSIS_VERSION`** (`cache.py:61`, `"v6-calib-style-keys"` → new value) +
   full cache rebuild (930 photos).
-- [ ] **R5 — Validate the target resolution before locking it. Lr required.** Starting
+- [x] **R5 — Validate the target resolution before locking it. Lr required.** Starting
   hypothesis: 1536-2048px long edge (near-zero drift from 2048 in the measurement taken). To
   confirm: (a) re-run the scale→drift curve on 4-5 real photos of varied content (portrait,
   landscape, low-key, high-key) — the current measurement comes from **a single photo**;
@@ -193,29 +245,211 @@ part of its post-Q MAE is expected quantization noise, not prediction error.
     R4, re-run S0 — MAE must not regress; the cropped-photo-in-embedded-mode case (bug above)
     must lose its phantom delta.
 
+  **Done 2026-07-25.** Implementation:
+  - **R1**: `render_metrics.MEASURE_LONG_EDGE = 2048` (single source of truth) sent as
+    `width`/`height` in both job payloads (`main_window.py`, `neutral_preview_worker.py`).
+  - **R2**: `render_metrics_gpu.downsample_to_measure_grid` (torch `F.interpolate(mode="area")`
+    — GPU-resident, mathematically equivalent to `cv2.INTER_AREA` for downsampling, avoids a
+    CPU round-trip on the GPU-strict path per CLAUDE.md) folded into `_to_hwc_u8`, the single
+    choke point shared by `analyze_rendered_gpu`/`analyze_rendered_gpu_dual` — covers
+    `PreviewJPEG` (fresh render), `NeutralPreviewJPEG` (neutral anchor), `InCameraJPEG`
+    (embedded, via `gpu_schedule`), and `calibrate_hsl_response.py`'s probe measurement in one
+    place, for free. `gpu_raw.py` (RAW path, doesn't route through `_to_hwc_u8`) got an explicit
+    second call: downsampled Lab/sharp-mask for `tone`/`bands` (the k-NN/comparison-facing
+    fields) only — the existing full-res `exposure_sharp`/`grayworld_*_sharp` fields were left
+    untouched (confirmed write-only/never-read-back via grep, same class of dead diagnostic data
+    as the `delta_*` columns removed in W3 — not part of R2's scope). Never upsamples.
+  - **R3**: `sharpness._blur_sigma(h, w) = 0.002 * hypot(h, w)`, applied before the Laplacian in
+    both `sharp_mask` (numpy, `scipy.ndimage.gaussian_filter`) and `sharp_mask_gpu` (torch,
+    hand-rolled separable conv2d — GPU-strict, no cv2/scipy round-trip). New
+    `app/tests/test_sharpness.py` (8 tests, incl. 2 GPU-marked).
+  - **R4**: `ANALYSIS_VERSION` bumped to `"v7-measure-grid"`. This does **not** eagerly rebuild
+    anything — it only changes the hash salt, so `raw_signature`/`style_hash` mismatch on next
+    access and each photo lazily re-measures the next time it goes through Analyze/Preview/Apply
+    in the GUI. The literal "full cache rebuild (930 photos)" is therefore a consequence the user
+    will see as slower first-touch passes over the catalog, not an eager batch job — no tool
+    exists (or was built) to force it atomically, and forcing it wasn't attempted (real Lr
+    session, real 930-photo cost, not something to trigger unilaterally).
+  - **R5 (Lr required, live evidence gathered)**: bridge was connected during this session.
+    (a) Scale→drift curve re-run on 5 real, varied photos (`ILCE-7M4`, mostly underexposed
+    night-event frames, one moderate-key) at edges {512, 1024, 1536, 2048, 3072, 4096, native
+    7028px} — **with R3's blur active, the sharp/global gap is now stable end-to-end from 512px
+    all the way to native resolution** for every photo (e.g. +0.08 to +0.11 L* across the whole
+    range for one frame, +4.67 to +4.70 for another) — the degenerate-toward-0 failure mode from
+    the original single-photo evidence did not reproduce at any scale once R3 was in place. This
+    means R3 alone already neutralizes the specific "sharp mask degenerates at native res"
+    mechanism; R2 remains necessary regardless, for matching resolution *across* differently-
+    scaled sources (RAW vs. embedded JPEG vs. Lr render), not just for within-source stability.
+    (b) Live timing via the MCP `mcp.client` SDK against the running App
+    (`http://127.0.0.1:5000/mcp`), 5 real selected photos: **cost is dominated by Lightroom's own
+    preview-cache warm/cold state, not cleanly by the requested resolution** — a cold
+    (regenerate-needed) request costs ~4s/photo *regardless of whether it was 512 or 2048*, while
+    a warm (already-cached-at-that-quality) request costs ~0.1-0.3s/photo. Concretely: first 512
+    call 1.0-1.5s/5 photos (warm from Lr's own filmstrip-size caching), first 2048 call 19.4s/5
+    photos (~3.9s/photo, cold), but a *later* 512 call also hit 19.6s/5 photos once the cache
+    slot had been displaced by the 2048 requests. This matches PLAN's own evidence for
+    `render_probe` (~4s/photo) — raising `get_thumbnails` to 2048 means it now falls into that
+    same regenerate-cost regime on first touch per photo per session, not a new, distinct
+    bottleneck. Stopped further live probing at this point (bridge stayed healthy throughout,
+    `get_thumbnails` never mutates develop settings — no risk to the user's catalog — but
+    repeated automated Lr requests aren't free to run indefinitely against a live session).
+    **Verdict: 2048 confirmed** — flat scale→drift curve at every resolution tested (no reason to
+    prefer a smaller edge on drift grounds) and the timing cost is the same class of cost the
+    plan already accepted for `render_probe`, not a new prohibitive one.
+
+  `python -m pytest app/tests -q`: **163 passed** (was 152; +11 from `test_sharpness.py` and
+  `test_measure_grid.py`), run with **no GPU marker filter** (`-m "not gpu"` dropped) since this
+  session has a real CUDA GPU — all GPU-marked tests (parity + new sharp-mask GPU tests) ran for
+  real, not skipped.
+
+  S0 re-run is a **sanity check only, not a post-R baseline**: `validate_seed_matching.py` reads
+  cached measurements via the hash-free `_latest` accessors (by design, cf. S0), so it serves the
+  **old, pre-bump cached rows** untouched — `ANALYSIS_VERSION`'s bump doesn't retroactively
+  change bytes already on disk, only what counts as fresh on the *next* access. Confirms the
+  harness + `autocorrect.py`/`cache.py` changes stay wired correctly against the real catalog (no
+  crash, 163/163 green) and the seed pool grew organically during this session (509→551 seeds,
+  the user was actively marking references live) — MAE deltas seen (e.g. expo 4.38→4.30, temp
+  123.62→119.80) are from that pool growth, not from R2/R3. **A genuine post-R baseline requires
+  the user to re-run Analyze/Preview/Apply over the catalog live** (real 930-photo cost, Lr
+  required) — not run here.
+
 ---
 
 ## W — Make the embedded JPEG's potential actually work
 
-- [ ] **W1 — `app/tools/calibrate_wb_response.py`.** Same pattern as
+- [x] **W1 — `app/tools/calibrate_wb_response.py`.** Same pattern as
   `calibrate_hsl_response.py`: headless server, probes `render_probe` with known
   `Temperature`/`Tint` deltas, measures `neutral_stats` before/after, regression → `WBResponse`
   (2×2 Jacobian `da_dtemp/db_dtemp/da_dtint/db_dtint`), saved via `response.save`.
-- [ ] **W2 — Run the real calibrations. Lr required.** HSL (already scripted) + WB (new) for
+
+  **Done 2026-07-25.** Anchors on the As Shot Temperature/Tint (numeric readback after
+  `WhiteBalance='As Shot'`, same mechanism as `gui.neutral_preview_worker` — physically the
+  right anchor since `_plan_embedded` applies its correction from that same point), then probes
+  `Temperature` and `Tint` independently around it and fits each of the 4 slopes via the
+  existing `response.fit_linear_response`. Guards a probe's `neutral_frac` before trusting its
+  a*/b* reading (`_MIN_NEUTRAL_FRAC=0.01`) — a probe on a mostly non-neutral crop is skipped and
+  logged, never silently folded into the fit. Aborts (does not save) if fewer than 2 usable
+  probes per axis. Import-sanity-checked only (see W2 — could not run it end-to-end this
+  session).
+
+- [x] **W2 — Run the real calibrations. Lr required.** HSL (already scripted) + WB (new) for
   the catalog's 2 (camera, profile) pairs: `ILCE-7M4|IN`, `ILCE-7M4|Neutral`. **After R** (not
   before — avoid calibrating on the old grid and having to redo it).
-- [ ] **W3 — Remove `_compute_deltas`.** Decision made: keep the raw embedded-JPEG transplant
+
+  **Done 2026-07-25** (retried after the earlier bridge/App drop — user relaunched Lightroom +
+  the App). Since a second `calibrate_hsl_response.py`/`calibrate_wb_response.py` process can't
+  bind port 5000 alongside the already-running `app.main`, both calibrations were driven via the
+  MCP client SDK against the live App (same pattern as R5's timing script) — **identical math**
+  (`response.fit_linear_response`, `response.save`), only the job-submission transport differs.
+  `render_probe` does a per-adjustment UUID lookup (`findPhotoByUuid` fallback) independent of
+  Lr's GUI selection, so reference photos were picked by `photo_id`/scored for neutral content
+  programmatically rather than requiring the user to click through the grid:
+  - **`ILCE-7M4|IN`** — `SML03337.ARW`, neutral_frac≈0.057 (good). WB:
+    `WBResponse(da_dtemp=+0.523, db_dtemp=+0.992, da_dtint=+0.208, db_dtint=-0.193)`. HSL: only
+    **Red/Orange** had genuine content in this single photo (all other bands: 0 reliable probes,
+    left on the nominal fallback — expected, one photo can't exercise all 8 hue bands without a
+    color-chart target).
+  - **`ILCE-7M4|Neutral`** — `SML04237.ARW`, neutral_frac≈0.012 (**marginal** — this catalog is
+    almost entirely dark nightclub/event photos; scored across 8 brightness-ranked candidates,
+    this was the best available, still barely above the tool's own `_MIN_NEUTRAL_FRAC=0.01`
+    guard, and the Tint axis only got 3/5 usable probes). WB:
+    `WBResponse(da_dtemp=-0.088, db_dtemp=+0.358, da_dtint=+0.111, db_dtint=-0.138)` — treat with
+    more skepticism than the IN result given the weak neutral sample (~7000 px). HSL: Red,
+    Orange, Yellow, Aqua calibrated; Green/Blue/Purple/Magenta still nominal.
+
+  **Two real bugs found and fixed along the way** (both would have made this calibration inert):
+  1. `gui.autocorrect_worker.py` looked up the response model via
+     `current_develop["CameraProfile"]` (Lr's **DCP** color profile — in this catalog, the
+     constant string `"Camera FL"` for all 930 photos, verified) instead of `PhotoMeasure.
+     profile_capture` (the **in-camera creative profile**, `"IN"`/`"Neutral"` — what
+     `calibrate_hsl_response.py`/`calibrate_wb_response.py` actually key their saved files by,
+     via `exif_profile.read_capture_profiles`). Two different axes entirely, silently
+     mismatched — a calibration would have been produced but **never loaded** by the real
+     correction pipeline on any catalog with a uniform DCP profile. Fixed (one-line swap +
+     explanatory comment).
+  2. `validate_seed_matching.run_embedded_validation` never loaded/passed a `model` into
+     `autocorrect.plan()` at all (always `None`) — S0 would have kept reporting "not calibrated"
+     forever regardless of real calibration state. Fixed: measures now group by
+     `(exif_camera, profile_capture)` and each group loads its own `response.load(...)`, mirroring
+     the (now-fixed) production lookup. Also fixed a related ambiguity: `wb_temp_pairs` only
+     counted photos where a correction was actually **written**, conflating "no calibration" with
+     "calibrated but within the dead zone, nothing to write" — now a calibrated-but-conforming
+     photo counts with its implicit zero-delta prediction (consistent with how Exposure/HSL are
+     already compared), and `wb_n_uncalibrated` means only "no calibration exists for this
+     photo's group." New regression test
+     (`test_run_embedded_validation_uses_response_keyed_by_profile_capture`) locks in the fix.
+
+  Real photo counts in the catalog: 26 photos at `IN`, 904 at `Neutral`. `response_cache/` now
+  has `ILCE-7M4__IN.json` and `ILCE-7M4__Neutral.json`. `python -m pytest app/tests -q`:
+  **195 passed** (was 194). S0 re-run confirms the WB axis genuinely fires now — see W5.
+
+- [x] **W3 — Remove `_compute_deltas`.** Decision made: keep the raw embedded-JPEG transplant
   (`ignore_bias=True`). Remove `autocorrect_worker.py:63-100` and the 4 `delta_*` columns in
   `InCameraJPEG` (`cache.py:205-208`) — confirmed dead code, never read back.
-- [ ] **W4 — Revisit `_MAX_LUM_EMBEDDED_RAW`/`_MAX_HUE_EMBEDDED_RAW`** (`hsl.py:45-46`) once W2
+
+  **Done 2026-07-25.** Removed `_compute_deltas` and its call site (`autocorrect_worker.py`),
+  the 4 `delta_*` columns from `InCameraJPEG`'s schema, and the matching kwargs from
+  `put_in_camera_jpeg`/`_in_camera_jpeg_dict`/`_delta_bands_to_json` (the last now fully unused,
+  removed too). This is a **structural** schema change → `cache.SCHEMA_VERSION` bumped 4→5,
+  which per `cache.py`'s own design means the **real, live 930-photo/551-seed cache gets
+  DROPPED and recreated on next app launch** (no row-by-row migration, by design) — confirmed
+  with the user before doing it (asked explicitly: defer vs. bump now); user chose to bump now.
+  Verified on a throwaway cache: `InCameraJPEG` no longer has the 4 columns, `PRAGMA user_version
+  == 5`. The real catalog's cache has **not** been touched yet (only wipes lazily, on next
+  `open_cache()` call from the GUI/a tool) — the user should expect a full re-analyze next launch.
+
+- [x] **W4 — Revisit `_MAX_LUM_EMBEDDED_RAW`/`_MAX_HUE_EMBEDDED_RAW`** (`hsl.py:45-46`) once W2
   is done — currently a double guard (guessed nominal gain + tight cap) that may over-dampen
   the correction once real gains are available.
-- [ ] **W5 — `test_exposure.py` + `test_wb_model.py`.** Close the test-coverage gap (guards on
+
+  **Done 2026-07-25 — evidence-based decision: caps left unchanged.** The premise behind this
+  step was that the nominal gains (`_NOM_DL_DLUM=0.4`, `_NOM_DHUE_DHUE=0.35`) were probably
+  *pessimistic* guesses, and once real (presumably stronger) gains landed, the tight
+  `_MAX_LUM_EMBEDDED_RAW=10`/`_MAX_HUE_EMBEDDED_RAW=8` caps would become the redundant, over-
+  restrictive half of the "double guard." **The real W2 data shows the opposite**: every
+  measured Luminance/Hue gain across both profiles is *weaker* than its nominal prior, not
+  stronger —
+  | Axis | Nominal | Real range (6 calibrated bands) | Ratio |
+  |---|---|---|---|
+  | `dl_dlum` (Luminance→L*) | 0.40 | 0.023 – 0.076 | **5–17× weaker** |
+  | `dhue_dhue` (Hue→°) | 0.35 | 0.037 – 0.159 | **2–9× weaker** |
+  | `dchroma_dsat` (Saturation→C*, uncapped-embedded axis, for context) | 0.60 | 0.024 – 0.424 | 1.4–25× weaker |
+
+  A weaker real gain means `plan_band`'s `dl / gain` division now predicts an even *larger*
+  slider delta than the nominal fallback did for the same target L*/hue gap — the caps bind
+  **more** often post-calibration, not less. HSL Luminance sliders being subtle in practice is a
+  well-known Lr behavior, consistent with this. Raising the caps now would mean chasing a
+  physically-accurate-but-large predicted delta with a bigger, more visually jarring slider
+  swing — exactly what the caps' own stated rationale ("the JPEG has its own color science… we
+  don't want to copy it wholesale") argues against. **Conclusion: the caps are doing their job,
+  not a stale artifact of an inaccurate nominal prior — left as-is.** (Coverage caveat: only
+  Red/Orange/Yellow/Aqua have real numbers at all; Green/Blue/Purple/Magenta still run on the
+  nominal fallback on both profiles, cf. W2.)
+
+- [x] **W5 — `test_exposure.py` + `test_wb_model.py`.** Close the test-coverage gap (guards on
   `plan_from_render`/`_headroom_factor`/`_MAX_STEP_EV`, no-op branches of
   `refine_temp_tint`/`calibrate`) — currently absent, already flagged as backlog item 4 in
   `OLD_PLAN.md`.
   - Step-level test: re-run S0 (embedded branch) — the WB axis must now write corrections on
     deviant photos (instead of 100% `n_uncalibrated`), embedded MAE improved vs. the R baseline.
+
+  **Done 2026-07-25.** `test_exposure.py` (14 tests: headroom decay/floor, dead-zone-free
+  clamping to `±max_step_ev`, accumulation on `current_exposure`, highlight/shadow headroom
+  attenuation direction-specific, calibrated-response usage, multi-sample skip-on-`None`) +
+  `test_wb_model.py` (17 tests: `slope_for_camera` known/unknown, `calibrate`'s median-offset/
+  robustness/single-seed/empty-seed behavior, `predict_temperature` bounds, `refine_temp_tint`'s
+  3 no-op branches + delta/final-value clamping). 31 new tests.
+
+  **S0 criterion now genuinely met** (after W2 landed + the two bugs above got fixed): embedded
+  WB axis went from `wb: 0 corrected, ... WB response not calibrated` (100% uncalibrated) to
+  `wb: 3 corrected, 393 matching (nothing written)` with `wb_calibrated=True`, and — the part
+  that actually matters for judging quality — **WB Temperature MAE is now a real, measured
+  number**: 175.67K (n=260, up from n=0/`n/a`), Tint MAE 4.02 (n=260). Worse than seeds-mode WB's
+  118.29K, which is expected: embedded-mode WB is anchored on a single marginal-neutral-content
+  reference photo (`SML04237`, W2) rather than seeds-mode's 575-seed pool. `python -m pytest
+  app/tests -q`: **195 passed** (was 163 pre-W). Seed pool kept growing live during this session
+  (575 seeds now, up from 551) — HSL/expo/calib MAE moved slightly from that, not from any code
+  change in this step.
 
 ---
 

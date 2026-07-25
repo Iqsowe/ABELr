@@ -27,6 +27,20 @@ from dataclasses import dataclass
 import numpy as np
 
 # --------------------------------------------------------------------------- #
+# Common measurement grid (PLAN.md step R) — single source of truth
+# --------------------------------------------------------------------------- #
+# Long-edge cap (px) every measured source (RAW, embedded in-camera JPEG, Lr
+# render/neutral anchor) is normalized to before sharp_mask/tone_stats/
+# band_stats/neutral_stats: the 4 sources previously lived at radically
+# different resolutions (RAW ~36.7MP, embedded JPEG ~32.7MP, Lr render 512px
+# default) and got differenced against each other — the sharp-zone mask
+# degenerates toward global at native resolution (PLAN.md R evidence).
+# Starting hypothesis (single-photo measurement, near-zero sharp/global drift
+# at this scale) confirmed by R5's multi-photo scale->drift curve + live Lr
+# timing — see PLAN.md step R5 for the evidence.
+MEASURE_LONG_EDGE = 2048
+
+# --------------------------------------------------------------------------- #
 # sRGB → CIELAB (D65) colorimetry. Standard matrices/constants.
 # --------------------------------------------------------------------------- #
 # Linear sRGB (Rec.709 primaries, D65 white) → XYZ. IEC 61966-2-1.

@@ -85,7 +85,13 @@ def _probe_chunk(
         {"photo_id": p.photo_id, "develop": dict(_NEUTRAL_DEVELOP)} for p in chunk
     ]
     job_id = job_queue.submit(
-        JobType.RENDER_PROBE, {"adjustments": adjustments, "settle": settle}
+        JobType.RENDER_PROBE,
+        {
+            "adjustments": adjustments,
+            "settle": settle,
+            "width": render_metrics.MEASURE_LONG_EDGE,
+            "height": render_metrics.MEASURE_LONG_EDGE,
+        },
     )
     result = job_queue.wait_result(job_id, timeout)
     if result is None:

@@ -1,0 +1,56 @@
+{
+  "camera": "ILCE-7M4",
+  "profile": "Neutral",
+  "exposure": {
+    "ev": [],
+    "lstar": []
+  },
+  "wb": {
+    "da_dtemp": -0.08768476247787475,
+    "db_dtemp": 0.3582519173622131,
+    "da_dtint": 0.11094086445294894,
+    "db_dtint": -0.13827241560411171
+  },
+  "bands": {
+    "Red": {
+      "dchroma_dsat": 0.12015771040866945,
+      "dl_dlum": 0.05903736365295199,
+      "dhue_dhue": 0.14715989980730632
+    },
+    "Orange": {
+      "dchroma_dsat": 0.2471890202030591,
+      "dl_dlum": 0.05704525350286886,
+      "dhue_dhue": 0.15917901761804074
+    },
+    "Yellow": {
+      "dchroma_dsat": 0.4237453152175299,
+      "dl_dlum": 0.07598648599274843,
+      "dhue_dhue": 0.13831294958794327
+    },
+    "Green": {
+      "dchroma_dsat": 0.0,
+      "dl_dlum": 0.0,
+      "dhue_dhue": 0.0
+    },
+    "Aqua": {
+      "dchroma_dsat": 0.0672029475439791,
+      "dl_dlum": 0.04710943888627946,
+      "dhue_dhue": 0.1159197533419388
+    },
+    "Blue": {
+      "dchroma_dsat": 0.0,
+      "dl_dlum": 0.0,
+      "dhue_dhue": 0.0
+    },
+    "Purple": {
+      "dchroma_dsat": 0.0,
+      "dl_dlum": 0.0,
+      "dhue_dhue": 0.0
+    },
+    "Magenta": {
+      "dchroma_dsat": 0.0,
+      "dl_dlum": 0.0,
+      "dhue_dhue": 0.0
+    }
+  }
+}

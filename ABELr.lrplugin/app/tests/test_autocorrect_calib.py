@@ -45,8 +45,8 @@ def test_plan_seeds_mode_transplants_calibration():
     assert len(adjustments) == 1
     dev = adjustments[0].develop
     assert dev["EnableCalibration"] is True
-    assert dev["ShadowTint"] == 8
-    assert dev["RedHue"] == -15
+    assert dev["ShadowTint"] == 10  # 8.0 snapped to the nearest 5-unit step
+    assert dev["RedHue"] == -15     # already on-grid
     assert dev["BlueSaturation"] == 20
     assert "RedSaturation" not in dev  # not seeded → not written
 
@@ -66,7 +66,7 @@ def test_plan_embedded_mode_still_transplants_calibration_via_seeds():
     assert diag.mode == "embedded"
     assert len(adjustments) == 1
     dev = adjustments[0].develop
-    assert dev["GreenHue"] == 12
+    assert dev["GreenHue"] == 10  # 12.0 snapped to the nearest 5-unit step
     assert dev["EnableCalibration"] is True
 
 

@@ -226,15 +226,29 @@ def process_bayer_gpu(rb: RawBayer) -> RawGpuResult:
     grayworld_rg, grayworld_bg = _grayworld(pp)
 
     # Sharp-zone tone/bands — sRGB derived from ProPhoto, comparable to JPEGs
-    # (camera/preview).
+    # (camera/preview). `exposure_sharp`/`grayworld_*_sharp` below keep their
+    # own full-res mask (RAW-domain diagnostic, write-only in the cache, never
+    # compared cross-source — PLAN.md R2's scale-mismatch fix targets the sRGB
+    # tone/band measurement, which IS compared against the embedded JPEG and
+    # the Lr render).
     pp_hw3 = pp.reshape(H, W, 3)
     hwc_u8 = _prophoto_linear_to_srgb_u8_gpu(pp_hw3)
     lab = render_metrics_gpu._srgb_u8_to_lab(hwc_u8)
-    sharp = sharpness.sharp_mask_gpu(lab[..., 0])                       # HxW bool
-    tone = render_metrics_gpu.tone_stats(hwc_u8, lab, mask=sharp)
-    bands = render_metrics_gpu.band_stats(hwc_u8, lab, mask=sharp)
+    sharp = sharpness.sharp_mask_gpu(lab[..., 0])                       # HxW bool, full res
 
-    # Sharp zone (same Y/gray-world reductions, restricted to the sharp mask).
+    # Common measurement grid (PLAN.md R2): re-derive Lab/sharp-mask on the
+    # downsampled grid only when downsampling actually occurs (identity
+    # otherwise) — avoids a second Lab conversion on an already-small source.
+    hwc_measure = render_metrics_gpu.downsample_to_measure_grid(hwc_u8)
+    if hwc_measure is hwc_u8:
+        lab_measure, sharp_measure = lab, sharp
+    else:
+        lab_measure = render_metrics_gpu._srgb_u8_to_lab(hwc_measure)
+        sharp_measure = sharpness.sharp_mask_gpu(lab_measure[..., 0])
+    tone = render_metrics_gpu.tone_stats(hwc_measure, lab_measure, mask=sharp_measure)
+    bands = render_metrics_gpu.band_stats(hwc_measure, lab_measure, mask=sharp_measure)
+
+    # Sharp zone (same Y/gray-world reductions, restricted to the full-res mask).
     mask_flat = sharp.reshape(-1)
     exposure_sharp = _exposure(pp[mask_flat], luma[mask_flat])
     grayworld_rg_sharp, grayworld_bg_sharp = _grayworld(pp[mask_flat])

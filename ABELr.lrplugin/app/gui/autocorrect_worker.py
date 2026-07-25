@@ -60,46 +60,6 @@ def _safe(fn) -> None:
         pass
 
 
-def _compute_deltas(raw_dict: dict | None, jpeg_sharp) -> dict:
-    """Deltas in-camera JPEG vs RAW (sharp zone) = transformation applied by the profile.
-
-    - `delta_luma_median`: median JPEG L* − median RAW L* (neutral render) → tonal lift
-      from the creative profile.
-    - `delta_wb_cast_a/b`: a*/b* cast measured on the JPEG neutrals (the as-shot RAW
-      serves as a ≈ neutral reference) → hue baked in by the profile.
-    - `delta_hsl`: per band, chroma/sat/hue/L* delta JPEG − RAW.
-    Returns a dict of kwargs ready for `put_in_camera_jpeg` (None values when not
-    computable)."""
-    out = {
-        "delta_luma_median": None, "delta_wb_cast_a": None,
-        "delta_wb_cast_b": None, "delta_hsl": None,
-    }
-    if jpeg_sharp is None:
-        return out
-    if jpeg_sharp.neutral is not None:
-        out["delta_wb_cast_a"] = jpeg_sharp.neutral.a_bias
-        out["delta_wb_cast_b"] = jpeg_sharp.neutral.b_bias
-    raw_tone = (raw_dict or {}).get("tone")
-    if raw_tone is not None and jpeg_sharp.tone is not None:
-        out["delta_luma_median"] = jpeg_sharp.tone.median_l - raw_tone.median_l
-    raw_bands = {b.name: b for b in ((raw_dict or {}).get("bands") or [])}
-    if jpeg_sharp.bands and raw_bands:
-        deltas = []
-        for jb in jpeg_sharp.bands:
-            rb = raw_bands.get(jb.name)
-            if rb is None:
-                continue
-            deltas.append({
-                "name": jb.name,
-                "dchroma": jb.median_chroma - rb.median_chroma,
-                "dsat": jb.median_sat - rb.median_sat,
-                "dhue": jb.median_hue - rb.median_hue,
-                "dl": jb.median_l - rb.median_l,
-            })
-        out["delta_hsl"] = deltas or None
-    return out
-
-
 class AutoCorrectWorker(QThread):
     """Measures the selection (GPU + cache) and plans/applies the correction."""
 
@@ -275,10 +235,14 @@ class AutoCorrectWorker(QThread):
                 return
 
             camera = next((m.exif_camera for m in measures if m.exif_camera), None)
-            profiles = Counter(
-                m.current_develop.get("CameraProfile") for m in measures
-                if m.current_develop.get("CameraProfile")
-            )
+            # Keyed by the in-camera creative profile (IN/SH/Neutral/…), matching
+            # how calibrate_hsl_response.py/calibrate_wb_response.py save their
+            # response (`exif_profile.read_capture_profiles`) — NOT `current_develop
+            # ["CameraProfile"]` (the Lr DCP color profile, a different axis
+            # entirely: e.g. "Camera FL" for every photo in a catalog regardless of
+            # in-camera style). Using the DCP key here silently loaded no
+            # calibration ever, on any catalog where the DCP profile is constant.
+            profiles = Counter(m.profile_capture for m in measures if m.profile_capture)
             profile = profiles.most_common(1)[0][0] if profiles else None
             model = response.load(camera, profile)
 
@@ -398,13 +362,12 @@ class AutoCorrectWorker(QThread):
             if conn is not None:
                 s = sig[p.photo_id]
                 prof = profiles.get(p.path)
-                deltas = _compute_deltas(raw_out.get(p.photo_id), r.sharp)
-                _safe(lambda r=r, s=s, p=p, prof=prof, deltas=deltas:
+                _safe(lambda r=r, s=s, p=p, prof=prof:
                       cachemod.put_in_camera_jpeg(
                           conn, p.photo_id, s,
                           sharp=r.sharp, glob=r.glob,
                           mask_sharp_frac=r.mask_sharp_frac, profile_capture=prof,
-                          commit=False, **deltas))
+                          commit=False))
 
         # A single commit for the whole pass (Fable 5 review P-07): avoids
         # ~2-3 commits/photo (WAL churn) on large batches.

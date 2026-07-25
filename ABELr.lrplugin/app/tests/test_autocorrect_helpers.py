@@ -65,7 +65,7 @@ def test_calib_develop_dict_empty_without_calibration():
     assert ac._calib_develop_dict(t) == {}
 
 
-def test_calib_develop_dict_writes_present_fields_clamped_and_rounded():
+def test_calib_develop_dict_writes_present_fields_clamped_and_snapped():
     from app.core.seed_match import SeedTarget
 
     t = SeedTarget(
@@ -77,10 +77,10 @@ def test_calib_develop_dict_writes_present_fields_clamped_and_rounded():
     assert t.has_calibration() is True
     dev = ac._calib_develop_dict(t)
     assert dev == {
-        "ShadowTint": -12,
-        "RedHue": 100,          # clamped to +100
+        "ShadowTint": -10,       # clamped to -12.4, snapped to the nearest 5
+        "RedHue": 100,           # clamped to +100 (already on-grid)
         "GreenHue": 0,
-        "GreenSaturation": -100,  # clamped to -100
+        "GreenSaturation": -100,  # clamped to -100 (already on-grid)
         "EnableCalibration": True,
     }
     # Fields absent from the target (RedSaturation/BlueHue/BlueSaturation) omitted.

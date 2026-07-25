@@ -158,6 +158,26 @@ def test_target_from_seeds_calibration_spread_guard_allows_close_values():
     assert 10.0 < tgt.red_hue < 12.0
 
 
+def test_match_target_with_distance_returns_nearest_raw_distance():
+    target = _seed("t", 0.5, 0.5, 50.0)
+    near = _seed("near", 0.55, 0.5, 50.0, temp=6000.0)
+    far = _seed("far", 5.0, 5.0, 5.0, temp=4000.0)
+    tgt, dist = sm.match_target_with_distance(target, [near, far], k=1)
+    assert tgt is not None
+    expected_dist = sm.k_nearest(target, [near, far], k=1)[0][1]
+    assert dist == pytest.approx(expected_dist)
+    assert dist > 0.0  # near isn't an exact match
+    # Consistent with match_target (same aggregation, distance just exposed alongside).
+    assert sm.match_target(target, [near, far], k=1).temperature == tgt.temperature
+
+
+def test_match_target_with_distance_none_on_empty_pool():
+    target = _seed("t", 0.5, 0.5, 50.0)
+    tgt, dist = sm.match_target_with_distance(target, [target])  # only self in pool
+    assert tgt is None
+    assert dist is None
+
+
 def test_weighted_bands_averages_reliable_only():
     def band(name, frac, hue, chroma):
         return BandStats(name, frac, hue, chroma, 0.3, 0.0, 50.0)

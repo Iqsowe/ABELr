@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import cache as cachemod
+from ..core import render_metrics
 from ..server.job_queue import job_queue
 from ..server.models import JobResult, JobType
 from .autocorrect_worker import AutoCorrectResult, AutoCorrectWorker
@@ -390,7 +391,11 @@ class MainWindow(QMainWindow):
         n = len(photos)
         self.status_label.setText(f"Fresh render of {n} photo(s) via Lightroom…")
         timeout = max(30.0, n * 0.6)
-        payload = {"photo_ids": [p.photo_id for p in photos]}
+        payload = {
+            "photo_ids": [p.photo_id for p in photos],
+            "width": render_metrics.MEASURE_LONG_EDGE,
+            "height": render_metrics.MEASURE_LONG_EDGE,
+        }
         self._render_worker = JobWorker(JobType.GET_THUMBNAILS, payload, timeout=timeout)
         self._render_worker.finished_result.connect(self._on_render_ready)
         self._render_worker.failed.connect(self._on_render_failed)

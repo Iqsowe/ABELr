@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 
 from . import hsl as _hsl
 from . import exposure as _exp
+from . import quantize as _quantize
 from . import seed_match
 from . import wb_model as _wb
 from .hsl import BandTarget
@@ -66,6 +67,14 @@ _CROP_AREA_MIN = 0.8
 # Global ↔ sharp-zone ΔL* divergence beyond which we flag "subject/background
 # diverge" (backlight, subject lit differently from the background).
 _DIVERGENCE_L = 4.0
+
+# Slider-grid steps (PLAN.md step Q — user-imposed workflow constraint, applied
+# to every *written* absolute value via `quantize.snap`). Exposure2012 stays
+# continuous (out of scope).
+_HSL_STEP = 5
+_CALIB_STEP = 5
+_TEMP_STEP = 250
+_TINT_STEP = 5
 
 
 @dataclass
@@ -258,7 +267,7 @@ def _calib_develop_dict(t: SeedTarget) -> dict:
     for field, sdk_key in keys.items():
         v = getattr(t, field)
         if v is not None:
-            out[sdk_key] = int(max(-100, min(100, round(v))))
+            out[sdk_key] = _quantize.snap(max(-100, min(100, v)), _CALIB_STEP)
     if out:
         out["EnableCalibration"] = True
     return out
@@ -407,7 +416,9 @@ def _plan_embedded(
             # Tint clamped to Lr's ±150 limits (Fable 5 review A-06), like Temperature.
             tint = max(-150.0, min(150.0, (m.neutral_asshot_tint or 0.0) + max(-10.0, min(10.0, dtint))))
             dev_by_id[m.photo_id].update(
-                WhiteBalance="Custom", Temperature=round(temp), Tint=round(tint)
+                WhiteBalance="Custom",
+                Temperature=_quantize.snap(temp, _TEMP_STEP),
+                Tint=_quantize.snap(tint, _TINT_STEP),
             )
             n_written += 1
         note = f"wb: {n_written} corrected, {n_conform} matching (nothing written)"
@@ -430,7 +441,7 @@ def _plan_embedded(
                 # dead zones in plan_band have already omitted matching bands.
                 if d == 0:
                     continue
-                dev_by_id[m.photo_id][key] = int(max(-100, min(100, round(d))))
+                dev_by_id[m.photo_id][key] = _quantize.snap(max(-100, min(100, d)), _HSL_STEP)
                 wrote = True
             if wrote:
                 n_written += 1
@@ -534,9 +545,12 @@ def _plan_seeds(
             # a single photo would fail the whole run (AttributeError).
             if wbresp is not None and m.analysis.neutral is not None:
                 temp, tint, _ = _wb.refine_temp_tint(temp, tint, m.analysis.neutral, wbresp)
+            temp = max(2000.0, min(12000.0, temp))  # Lr Temperature bounds (snap needs a clamped input)
             tint = max(-150.0, min(150.0, tint))  # Lr ±150 clamp (A-06)
             dev_by_id[m.photo_id].update(
-                WhiteBalance="Custom", Temperature=round(temp), Tint=round(tint)
+                WhiteBalance="Custom",
+                Temperature=_quantize.snap(temp, _TEMP_STEP),
+                Tint=_quantize.snap(tint, _TINT_STEP),
             )
             n_wb += 1
         diag.notes.append(f"wb: {n_wb}/{len(usable)} photo(s) matched (k-NN seeds)")
@@ -549,7 +563,7 @@ def _plan_seeds(
             deltas, _corrs = _hsl.plan_hsl(m.analysis.bands, tgs, model)
             for key, d in deltas.items():
                 cur = _f(m.current_develop, key, 0.0)
-                dev_by_id[m.photo_id][key] = int(max(-100, min(100, round(cur + d))))
+                dev_by_id[m.photo_id][key] = _quantize.snap(max(-100, min(100, cur + d)), _HSL_STEP)
             if deltas:
                 n_hsl += 1
         diag.notes.append(f"hsl: {n_hsl}/{len(usable)} photo(s) adjusted")

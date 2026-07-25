@@ -16,11 +16,14 @@ the numpy version (verified by `tools/validate_gpu_vs_libraw` / dedicated tests)
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 
 from . import gpu
 from . import render_metrics as rm
 from .pipeline import RenderAnalysis, RenderAnalysisDual
 from .render_metrics import BandStats, NeutralStats, ToneStats
+
+MEASURE_LONG_EDGE = rm.MEASURE_LONG_EDGE
 
 # Resolved once: GPU if available, otherwise CPU (gpu.device() never raises).
 # Upstream modules (gpu_jpeg, gpu_schedule) already decode on this same device via
@@ -52,8 +55,31 @@ _BAND_NAMES = rm.BAND_NAMES
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+def downsample_to_measure_grid(
+    hwc_u8: torch.Tensor, long_edge: int = MEASURE_LONG_EDGE
+) -> torch.Tensor:
+    """Downsamples an HWC uint8 tensor so its long edge is at most `long_edge`.
+
+    **Never upsamples** — a source already at or below the target grid (e.g.
+    an Lr render already requested at `long_edge`, cf. R1) is returned as-is.
+    Area/box averaging (`F.interpolate(mode="area")`): the GPU-resident
+    equivalent of `cv2.INTER_AREA` for downsampling, staying on-device
+    (GPU-strict, CLAUDE.md — no CPU round-trip for a cv2 call).
+    """
+    h, w = hwc_u8.shape[0], hwc_u8.shape[1]
+    long_side = max(h, w)
+    if long_side <= long_edge:
+        return hwc_u8
+    scale = long_edge / long_side
+    new_h, new_w = max(1, round(h * scale)), max(1, round(w * scale))
+    chw = hwc_u8.permute(2, 0, 1).unsqueeze(0).float()  # 1,C,H,W
+    resized = F.interpolate(chw, size=(new_h, new_w), mode="area")
+    return resized.squeeze(0).round().clamp(0, 255).to(torch.uint8).permute(1, 2, 0).contiguous()
+
+
 def _to_hwc_u8(chw_u8: torch.Tensor) -> torch.Tensor:
-    """nvJPEG/CPU outputs CHW uint8; we work in HWC. Force RGB 3 channels on the current device."""
+    """nvJPEG/CPU outputs CHW uint8; we work in HWC. Force RGB 3 channels on the
+    current device, then normalize to the common measurement grid (PLAN.md R2)."""
     if chw_u8.device != _DEV:
         chw_u8 = chw_u8.to(_DEV)
     if chw_u8.dim() == 3 and chw_u8.shape[0] in (1, 3):
@@ -62,7 +88,7 @@ def _to_hwc_u8(chw_u8: torch.Tensor) -> torch.Tensor:
         hwc = chw_u8
     if hwc.shape[-1] == 1:
         hwc = hwc.expand(-1, -1, 3)
-    return hwc.contiguous()
+    return downsample_to_measure_grid(hwc.contiguous())
 
 
 def _q(x: torch.Tensor, q: float) -> float:
