@@ -1,5 +1,9 @@
 # Launch Prompts — Fable 5 Review
 
+> Frozen audit artifact, 2026-07-18. Asserts the retired GPU-strict (no-CPU-fallback) contract
+> as current policy — it has since been lifted (GPU-first, CPU fallback; see `CLAUDE.md`). Read
+> as history, not current policy.
+
 How to use:
 1. `/model` → `claude-fable-5`.
 2. **A fresh session per pass** (or `/clear` between each). Never chain two passes

@@ -1,5 +1,9 @@
 # Complete Review — Fable 5
 
+> Frozen audit artifact, 2026-07-18. Asserts the retired GPU-strict (no-CPU-fallback) contract
+> as current policy — it has since been lifted (GPU-first, CPU fallback; see `CLAUDE.md`). Read
+> as history, not current policy.
+
 > **Goal**: 4-axis audit — bugs · architecture/dead code · perf · doc/roadmap.
 > **Model**: `claude-fable-5` · **Method**: 4 sequential passes (see Journal).
 > **Golden rule**: no finding without `file:line`. Develop parameter names verified

@@ -70,7 +70,6 @@ This project was (very) personal, and I'm sharing it with you thinking it might 
 So I'm asking for help, I would like help to make the best tool it can be, and solve the things I can't do alone.
 
 Actual context limitations :
-- I'm French, so the whole project (documentation, Claude files, everything except code) is in French. I'll gladly pass the project in English if you translate it right.
 - I'm on Windows 11, scripts are in powershell and other python packages run for Windows. If you have a Mac or Linux, feel free to add support for your hardware.
 - I use a GTX 2080 GPU, all image processing needs GPU, I've normally added CPU only support. You can review this part if you need it.
 - I use a Sony A7 IV Camera, exif data and raw processing works for .ARW files. It can be tricky on some part, but I'm kindly asking for other camera support.

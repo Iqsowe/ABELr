@@ -1,5 +1,10 @@
 # ABELr — Project overview
 
+> Historical / vision doc. The file layout and module names described below (e.g. `plugin/lib/`,
+> `app/` at repo root, `prediction.py`, `rust_ext/`) predate the self-sufficient
+> `ABELr.lrplugin/` rework and no longer match what's on disk — see `ARCHITECTURE.md` for the
+> current layout.
+
 ## Description
 
 ABELr is an intelligent photo-editing system for Adobe Lightroom Classic.

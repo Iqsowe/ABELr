@@ -4,7 +4,7 @@ How the system works. For the agent's **working rules** → [`../CLAUDE.md`](../
 For the **roadmap / status** → [`../PLAN.md`](../PLAN.md). For the **Lua SDK API** →
 [`lr15_sdk_api_reference.md`](lr15_sdk_api_reference.md).
 
-> State verified by code review (2026-07-05). The module "status" column reflects
+> State verified by code review (2026-07-25). The module "status" column reflects
 > what the code actually does, not the intent.
 
 ---
@@ -64,11 +64,13 @@ the GUI. Orphan eviction (TTL), saturation guard (max pending), plugin heartbeat
 
 ### Job types (App → plugin)
 
-`test`, `get_selected_photos`, `get_catalog_photos`, `get_thumbnails`, `render_probe`,
-`apply_adjustments` — dispatched in [`PollingLoop.lua`](../ABELr.lrplugin/PollingLoop.lua)
-(≈ lines 47-121).
+Source of truth: `JobType` enum in [`app/server/models.py`](../ABELr.lrplugin/app/server/models.py)
+and `dispatch()` in [`PollingLoop.lua`](../ABELr.lrplugin/PollingLoop.lua) — one enum member ⇔
+one `elseif` branch, kept in sync on any addition. Base jobs (`test`, `get_selected_photos`,
+`get_catalog_photos`, `get_thumbnails`, `render_probe`, `apply_adjustments`) plus Phase 2 jobs
+(metadata, collections, develop presets — see `models.py` for the full list).
 
-### Plugin side (`ABELr.lrplugin/`, 14 Lua files)
+### Plugin side (`ABELr.lrplugin/`)
 
 | File | Role |
 |---|---|
@@ -76,21 +78,23 @@ the GUI. Orphan eviction (TTL), saturation guard (max pending), plugin heartbeat
 | `MenuConnect` / `MenuRelaunch` / `ShowMessage` | Menu entries |
 | `PluginInfoProvider.lua` | Plug-in Manager section (connect/relaunch/status/test buttons) |
 | `Actions.lua` | connect / relaunch / checkStatus |
-| `AppLauncher.lua` | Start/stop/relaunch of the Python process via `launch_app.ps1` |
+| `AppLauncher.lua` | Start/stop/relaunch of the Python process via `launch.ps1` |
 | `PollingLoop.lua` | 300 ms loop, job dispatch, heartbeat `_G.ABELR_BRIDGE_HEARTBEAT` (5 s timeout) |
 | `HttpClient.lua` | GET/POST JSON wrappers (LrHttp) |
-| `PhotoData.lua` | Extracts path/EXIF/develop settings/catalog_path (**71 `DEVELOP_KEYS`**) |
+| `PhotoData.lua` | Extracts path/EXIF/develop settings/catalog_path (`DEVELOP_KEYS` list) |
 | `Adjustments.lua` | `applyDevelopSettings` batch inside `withWriteAccessDo` |
 | `Thumbnails.lua` | `requestJpegThumbnail` (`fetch`) + apply/render/restore cycle (`fetchProbe` → `render_probe`) |
 | `Json.lua` | Embedded JSON encoder/decoder |
 | `Utils.lua` | Logging, project paths |
+| `Collections.lua` / `Metadata.lua` / `Presets.lua` | Phase 2: collections, ratings/flags/keywords, develop presets — required by `PollingLoop.lua` |
+| `PhotoLookup.lua` | Photo resolution helper, required transitively by the three modules above |
 
 ---
 
 ## 3. Python module map — actual status
 
 Root `app/`: `main.py` (FastAPI daemon thread + Qt GUI), `requirements.txt`, `README.md`.
-Venv expected at `app/.venv` (cf. `launch_app.ps1`).
+Venv expected at `app/.venv` (cf. `launch.ps1` / `bootstrap.ps1`).
 
 ### `core/` — image & compute pipeline
 
@@ -98,7 +102,7 @@ Venv expected at `app/.venv` (cf. `launch_app.ps1`).
 
 | Module | Role | Main entry points |
 |---|---|---|
-| `gpu.py` | Strict CUDA context, VRAM budget, stream pool | `require_cuda()`, `GpuUnavailable` |
+| `gpu.py` | Device selection (cuda-or-cpu, never raises), VRAM budget, stream pool | `device()`, `require_cuda()` (opt-in, CUDA-only call sites) |
 | `gpu_raw.py` | Bayer → demosaic + WB + matrix → ProPhoto + stats (GPU) | `analyze_raw_gpu()` |
 | `gpu_jpeg.py` | GPU JPEG decoding (nvJPEG) + stream extraction | `decode_blobs()`, `extract_jpeg_stream()` |
 | `gpu_schedule.py` | VRAM-aware scheduler: unified unpack (1 rawpy open), CPU/GPU double-buffer, per-pipeline waves (Fable 5 review G7) | `process_combined_batch()` (+ wrappers `process_raw_batch()`/`process_embedded_batch()`), `analyze_render_blobs()` |
@@ -113,6 +117,7 @@ Venv expected at `app/.venv` (cf. `launch_app.ps1`).
 | `response.py` | Calibrated ∂render/∂slider model (disk cache) | `load()` |
 | `wb_model.py` | Post-k-NN Temp/Tint refinement (**live**) | `refine_temp_tint()` (called from `autocorrect.py:554`) |
 | `cache.py` | SQLite cache (5 tables) | see §5 |
+| `quantize.py` | Downsampling to the common measurement grid (`render_metrics.MEASURE_LONG_EDGE`) | used by `sharp_mask`/`tone_stats`/`band_stats` paths |
 | `embedded_jpeg.py` | In-camera JPEG (embedded target) + as-shot WB; imports `raw` | `RawReference` |
 | `raw.py` | ARW decoding via rawpy (**live** via `embedded_jpeg`, + tools) | `load_linear()`, `load_rgb()` |
 | `color.py` | Color spaces: linear ProPhoto, Y, → sRGB | conversion constants |
@@ -138,14 +143,24 @@ lives in the DB via `cache`, matching via `seed_match`). `core/prediction.py` ne
 | `job_worker.py` | live | Generic QThread: submits a job, waits for the plugin result |
 | `autocorrect_worker.py` | live | QThread: RAW+in-camera JPEG+preview (sharp area) → cache → `autocorrect.plan`; `analyze_only` mode |
 | `neutral_preview_worker.py` | live | QThread: neutral anchors (`render_probe`) → `NeutralPreviewJPEG` cache |
+| `fresh_render_worker.py` | live | Forces the plugin to render a fresh thumbnail before a measurement (bypasses stale-preview risk) |
 | `photo_panel.py` / `analysis_panel.py` | **STUB** | Empty, reserved (previews / histograms) |
 
-> `analysis_worker.py` removed (PLAN step 1, Fable 5 review) — non-reappearance
-> guard: `app/tests/test_no_dead_modules.py`.
+> `analysis_worker.py` removed (PLAN step 1, Fable 5 review) — no non-reappearance guard test
+> currently exists for it; `app/tests/test_smoke_import.py` catches broken imports in any
+> `core/`/`gui/` module that does exist.
 
 ### `server/`
 `api.py` (routes), `job_queue.py` (queue + heartbeat), `models.py` (Pydantic: `Job`, `JobResult`,
 `PhotoResult`, `ThumbnailResult`, `ExifData`, `PhotoAdjustment`, enums `JobType` / `JobStatus`).
+
+### `mcp/`
+`server.py` (FastMCP instance + tool definitions, mounted on `/mcp` in `server/api.py`),
+`tools.py` (`require_bridge()`, `run_job()` helpers shared by the tools). Re-exposes the job
+types above as MCP tools for Claude Code — see root `CLAUDE.md` § Communication.
+
+### `data/`
+Static/reference data shipped with the app (see folder for current contents).
 
 ---
 
@@ -169,32 +184,36 @@ inconsistent Δexposure (σ ≈ 0.7-1.3 stop). SPs are also often missing. `prev
 `catalog.py` remain useful for locating bundles and decoding the **rendered preview** (checking a
 result), not for measuring.
 
-### GPU-strict
+### GPU-first, CPU fallback
 
-User decision: pixel decoding runs on **GPU** (torch CUDA + nvJPEG), no more LibRaw
-`postprocess` call.
+Pixel decoding prefers **GPU** (torch CUDA + nvJPEG) over LibRaw `postprocess`, but the plugin
+must also run on machines without an NVIDIA card.
 
 | Step | Where |
 |---|---|
-| ARW decompression/unpack → 16-bit bayer plane | **Irreducibly CPU** (pool bounded to physical cores) |
-| Black-level, CFA WB, demosaic, matrix → ProPhoto, stats | **GPU** (`gpu_raw`) |
-| JPEG decoding (rendered preview + in-camera JPEG) | **GPU** nvJPEG (`gpu_jpeg`) |
-| tone / neutral / bands (CIELAB) | **GPU** (`render_metrics_gpu`, validated exact vs numpy ≤ 8 M px; beyond that, subsampled quantiles — negligible bias, cf. REVIEW_FABLE5 C-04) |
+| ARW decompression/unpack → 16-bit bayer plane | **Irreducibly CPU** (pool bounded to physical cores) — no GPU codec exists for Sony ARW |
+| Black-level, CFA WB, demosaic, matrix → ProPhoto, stats | GPU if available, else CPU (`gpu_raw`) |
+| JPEG decoding (rendered preview + in-camera JPEG) | GPU nvJPEG if available (`gpu_jpeg`) |
+| tone / neutral / bands (CIELAB) | GPU if available (`render_metrics_gpu`, validated exact vs numpy ≤ 8 M px; beyond that, subsampled quantiles — negligible bias, cf. REVIEW_FABLE5 C-04) |
 
-No CPU compute fallback: `gpu.require_cuda()` raises `GpuUnavailable` if CUDA is absent, the
-worker fails with a clear message. VRAM managed by `gpu_schedule` (waves sized to the budget).
-Parity verified by `tools/validate_gpu_vs_libraw` (exposure Y corr 1.000; gray-world corr
-0.97-0.9995, small constant bias absorbed by seed calibration).
+`gpu.device()` returns `cuda` if usable, otherwise `cpu` — **never raises**; every step above
+routes through it, so the whole pipeline switches automatically. `require_cuda()` /
+`GpuUnavailable` stay available for call sites that explicitly want to require CUDA (grep
+`gpu.py` for current callers) — not the default path. VRAM managed by `gpu_schedule` (waves
+sized to the budget; falls back to a conservative fixed RAM cap on CPU). Parity verified by
+`tools/validate_gpu_vs_libraw` (exposure Y corr 1.000; gray-world corr 0.97-0.9995, small
+constant bias absorbed by seed calibration).
 
 ---
 
 ## 5. SQLite cache (`core/cache.py`)
 
-`ABELr_cache.db` in the active catalog's folder. `SCHEMA_VERSION = 4`,
-`ANALYSIS_VERSION = "v5-style-keys-g2wb"` salted into the hashes (bump = full rebuild, no
-row-by-row migration; v5 = Fable 5 review G1: style keys completed + cam_mul[G2] guard). Workers
-consult the cache first → 2nd pass = zero decoding.
-That's the real gain on 500-1000 series, on top of the GPU.
+`ABELr_cache.db` in the active catalog's folder. Two independent version constants in
+`cache.py` (values not repeated here, they move on every bump — read the file):
+`SCHEMA_VERSION` (table structure — bump = DROP+recreate, no migration) and
+`ANALYSIS_VERSION` (salted into the freshness hashes — bump = full re-measure whenever the
+measurement algorithm changes, no row-by-row migration). Workers consult the cache first →
+2nd pass = zero decoding. That's the real gain on 500-1000 series, on top of the GPU.
 
 | Table | Hash key | Content |
 |---|---|---|
@@ -205,6 +224,11 @@ That's the real gain on 500-1000 series, on top of the GPU.
 | `NeutralPreviewJPEG` | `hash_style` | neutral anchor + `wb_asshot_temp/tint` |
 
 `is_seed`: marked/unmarked in the DB (no pixel decode). k-NN `seed_match` reads the seed pool.
+
+`hash_style` is keyed on `cache.py`'s `_STYLE_KEYS` — the develop settings that affect the
+neutral render (tone, crop, calibration, color grading) minus the ones the probe already
+neutralizes (Temp/Tint/Exposure/HSL). Applying an HSL correction must not invalidate the
+anchor, applying a calibration correction must.
 
 ### Neutral-anchored embedded mode
 

@@ -103,15 +103,9 @@ class MainWindow(QMainWindow):
         self.cb_expo = QCheckBox("Exposure")
         self.cb_wb = QCheckBox("WB")
         self.cb_hsl = QCheckBox("HSL")
-        for cb in (self.cb_expo, self.cb_wb, self.cb_hsl):
-            cb.setChecked(True)
         self.cb_calib = QCheckBox("Calibration")
-        self.cb_calib.setChecked(False)
-        self.cb_calib.setToolTip(
-            "k-NN transplant from the seeds (ShadowTint, Hue/Saturation R/G/B) —\n"
-            "always via seeds even in 'Ref = embedded JPEG' mode: no calibration\n"
-            "target is measurable from a render, missing seed → ignored."
-        )
+        for cb in (self.cb_expo, self.cb_wb, self.cb_hsl, self.cb_calib):
+            cb.setChecked(True)
         self.cb_embedded = QCheckBox("Ref = embedded JPEG")
         self.cb_embedded.setToolTip(
             "Unchecked: target = k-NN over the seeds whose RAW analysis (sharp\n"
