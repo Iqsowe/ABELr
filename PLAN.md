@@ -553,7 +553,7 @@ parametrized case, no test breaks. Real risks are a surviving importer and
   is dead, `read_capture_profiles` (plural) is live · update the `gpu.py:16` and
   `render_metrics_gpu.py:235,257` docstrings that reference removed symbols.
 
-- [ ] **D2 — The dead `embedded_jpeg` chain.** `load_embedded_rgb`, `embedded_tone`,
+- [x] **D2 — The dead `embedded_jpeg` chain.** `load_embedded_rgb`, `embedded_tone`,
   `embedded_target_l`, `read_raw_reference`, `read_raw_references`, `extract_reference`,
   `_bounded_workers` (a dead `ProcessPoolExecutor` path). **Trap**: `RawReference`'s first
   *field* is also named `embedded_tone` (`:77`) and is built positionally
