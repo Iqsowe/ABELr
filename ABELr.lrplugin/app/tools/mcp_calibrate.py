@@ -53,7 +53,14 @@ class McpProbe:
     async def probe(self, photo_id: str, develop: dict, settle: float) -> dict | None:
         result = await self._session.call_tool(
             "render_probe",
-            {"adjustments": [{"photo_id": photo_id, "develop": develop}], "settle": settle},
+            {
+                "adjustments": [{"photo_id": photo_id, "develop": develop}], "settle": settle,
+                # PLAN.md X3: explicit, though the server tool now defaults to
+                # the same value — avoids silently drifting back to Lua's 512
+                # legacy fallback if the server's own default ever changes.
+                "width": render_metrics.MEASURE_LONG_EDGE,
+                "height": render_metrics.MEASURE_LONG_EDGE,
+            },
         )
         if result.isError:
             print(f"  [!] render_probe error for {develop}: {result.content}")

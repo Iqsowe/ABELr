@@ -17,6 +17,8 @@ from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
+from ..core.render_metrics import MEASURE_LONG_EDGE
+from ..server import budget as budgetmod
 from ..server.job_queue import job_queue
 from ..server.models import JobType, PhotoResult, ThumbnailResult
 from .tools import require_bridge, run_job
@@ -146,6 +148,8 @@ async def get_thumbnails(
 async def render_probe(
     adjustments: list[dict[str, Any]],
     settle: float = 0.6,
+    width: int = MEASURE_LONG_EDGE,
+    height: int = MEASURE_LONG_EDGE,
     timeout: Optional[float] = None,
 ) -> dict:
     """Trial preview: applies TEMPORARY settings, renders a thumbnail, RESTORES.
@@ -156,13 +160,25 @@ async def render_probe(
     Temperature/Tint after the apply (the As Shot numeric value if
     WhiteBalance='As Shot'). Non-empty `restore_error` = the photo stayed in a
     modified state (worth flagging).
+
+    `width`/`height` default to the App's own measurement grid (PLAN.md R1) —
+    a probe rendered smaller than that is rejected as an undersized
+    measurement (`render_metrics_gpu.reject_if_undersized`) wherever it feeds
+    a calibration; Lua's 512 default (`PollingLoop.lua`) is a legacy fallback
+    only, reached if this tool is called without the App's own defaults.
     """
     require_bridge()
     if not adjustments:
         raise ToolError("No adjustment provided.")
     if timeout is None:
-        timeout = max(30.0, 5.0 * len(adjustments))
-    payload = {"adjustments": adjustments, "settle": settle}
+        # PLAN.md X3: the old max(30, 5*n) was under-dimensioned at the
+        # measurement grid (tuned for the 512 default) — route through the
+        # same budget the plugin's own workers use (PLAN.md N3).
+        timeout = budgetmod.job_timeout(len(adjustments), width, height, settle, "probe")
+    payload = {
+        "adjustments": adjustments, "settle": settle,
+        "width": width, "height": height, "timeout_s": timeout,
+    }
     result = await run_job(JobType.RENDER_PROBE, payload, timeout)
     thumbs = [_thumb_to_dict(t) for t in result.thumbnails]
     return {"count": len(thumbs), "thumbnails": thumbs}

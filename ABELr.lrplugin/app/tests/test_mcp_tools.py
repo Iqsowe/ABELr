@@ -11,7 +11,10 @@ import asyncio
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
+from app.core.render_metrics import MEASURE_LONG_EDGE
+from app.mcp import server as mcp_server
 from app.mcp import tools as mcp_tools
+from app.server import budget as budgetmod
 from app.server.models import JobResult, JobType
 
 
@@ -75,3 +78,29 @@ def test_require_bridge_disconnected(monkeypatch):
 def test_require_bridge_connected(monkeypatch):
     _patch(monkeypatch, _FakeQueue(connected=True))
     mcp_tools.require_bridge()  # does not raise
+
+
+def test_render_probe_defaults_to_measure_grid_and_ships_a_budget(monkeypatch):
+    """PLAN.md X3 — the MCP render_probe tool used to send no width/height at
+    all (Lua then defaulted to 512), and its own timeout (max(30, 5*n)) was
+    tuned for that 512 default, not the measurement grid."""
+    res = JobResult(job_id="job-123", status="ok", thumbnails=[])
+    queue = _FakeQueue(wait_result=res)
+    _patch(monkeypatch, queue)
+
+    n = 5
+    asyncio.run(mcp_server.render_probe(
+        adjustments=[{"photo_id": f"u{i}", "develop": {}} for i in range(n)], settle=0.6,
+    ))
+
+    assert len(queue.submitted) == 1
+    job_type, payload = queue.submitted[0]
+    assert job_type == JobType.RENDER_PROBE
+    assert payload["width"] == MEASURE_LONG_EDGE
+    assert payload["height"] == MEASURE_LONG_EDGE
+    assert payload["timeout_s"] == pytest.approx(
+        budgetmod.job_timeout(n, MEASURE_LONG_EDGE, MEASURE_LONG_EDGE, 0.6, "probe")
+    )
+    # Under-dimensioned legacy formula (max(30, 5*n)) must be gone, not just
+    # coincidentally close to the new value.
+    assert payload["timeout_s"] != max(30.0, 5.0 * n)

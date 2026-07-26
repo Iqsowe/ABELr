@@ -436,7 +436,7 @@ measurement. If the true slope is 14 or 20 instead of 17.0, every solve is biase
   doesn't move, that's a publishable result too — 17.0 was accidentally right, and the fallback
   can be documented as validated rather than assumed.
 
-- [ ] **X3 — Close the resolution hole on the MCP side.** `app/mcp/server.py:145-168` sends no
+- [x] **X3 — Close the resolution hole on the MCP side.** `app/mcp/server.py:145-168` sends no
   width/height → Lua defaults to 512 (`PollingLoop.lua:138-139`). Add both parameters, defaulting
   to `render_metrics.MEASURE_LONG_EDGE`, on the **App** side (Lua's 512 becomes a legacy
   fallback only), and plumb them through `mcp_calibrate.py`. Route the tool's default timeout
