@@ -39,6 +39,7 @@ from typing import Callable
 from PySide6.QtCore import QThread, Signal
 
 from ..core import cache as cachemod, gpu, gpu_jpeg, render_metrics, render_metrics_gpu
+from ..server import budget
 from ..server.job_queue import job_queue
 from ..server.models import JobType, PhotoResult, ThumbnailResult
 
@@ -61,13 +62,11 @@ _NEUTRAL_DEVELOP: dict[str, object] = {
     },
 }
 
-# Time budget per photo (apply + settle + render + restore on the plugin side).
-# Measured worst case ~7.4s/photo at 2048x2048 forced regeneration (PLAN.md N
-# section); must also stay above Thumbnails.lua's PROBE_SECONDS_PER_PHOTO=10
-# (Lua's own internal wait) with margin, or Python gives up before Lua's
-# response can arrive.
-_SECONDS_PER_PHOTO = 12.0
-_MIN_TIMEOUT = 30.0
+# Job timeout is computed by app.server.budget (PLAN.md N3) — shared with the
+# payload's "timeout_s" so Lua derives its own wait from the same number
+# instead of a second, independently-tuned constant (that's how the original
+# bug happened: THUMB_SECONDS_PER_PHOTO/PROBE_SECONDS_PER_PHOTO in Lua vs a
+# local Python constant, silently drifting apart).
 # render_probe batch size: the plugin dispatch is synchronous inside pollOnce,
 # a large batch would block the heartbeat for several minutes and widen the
 # window during which photos stay in a neutral state if Lr crashes.
@@ -114,6 +113,9 @@ def _probe_chunk(
             "settle": settle,
             "width": render_metrics.MEASURE_LONG_EDGE,
             "height": render_metrics.MEASURE_LONG_EDGE,
+            # Shipped so Lua derives its own wait from the same number (N3c)
+            # instead of a second, independently-tuned constant.
+            "timeout_s": timeout,
         },
     )
     result = job_queue.wait_result(job_id, timeout)
@@ -263,7 +265,10 @@ def ensure_neutral_previews(
             f"photo(s) in Lightroom…"
         )
         tick(start, len(todo))
-        timeout = max(_MIN_TIMEOUT, _SECONDS_PER_PHOTO * len(chunk))
+        timeout = budget.job_timeout(
+            len(chunk), render_metrics.MEASURE_LONG_EDGE, render_metrics.MEASURE_LONG_EDGE,
+            settle, "probe",
+        )
         got, chunk_failures = _probe_chunk(chunk, settle, timeout)
         failures.update(chunk_failures)
 
@@ -290,7 +295,10 @@ def ensure_neutral_previews(
                 f"Suspect anchor(s) ({len(suspects)}) — re-rendering with a long "
                 f"delay ({_RETRY_SETTLE:g}s)…"
             )
-            retry_timeout = max(_MIN_TIMEOUT, (_SECONDS_PER_PHOTO + _RETRY_SETTLE) * len(suspects))
+            retry_timeout = budget.job_timeout(
+                len(suspects), render_metrics.MEASURE_LONG_EDGE, render_metrics.MEASURE_LONG_EDGE,
+                _RETRY_SETTLE, "probe",
+            )
             retry_got, retry_failures = _probe_chunk(suspects, _RETRY_SETTLE, retry_timeout)
             got.update(retry_got)
             failures.update(retry_failures)

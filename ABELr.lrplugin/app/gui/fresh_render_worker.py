@@ -17,6 +17,7 @@ from typing import Callable
 
 from PySide6.QtCore import QThread, Signal
 
+from ..server import budget
 from ..server.job_queue import job_queue
 from ..server.models import JobType, PhotoResult, ThumbnailResult
 
@@ -25,8 +26,6 @@ _log = logging.getLogger("abelr.fresh_render")
 # Chunk size: larger than render_probe's _CHUNK_SIZE=16 since there's no
 # write/restore risk window to bound here, just the request's own timeout.
 _CHUNK_SIZE = 40
-_SECONDS_PER_PHOTO = 0.6
-_MIN_TIMEOUT = 30.0
 
 
 def fetch_thumbnails_chunked(
@@ -53,10 +52,15 @@ def fetch_thumbnails_chunked(
     for start in range(0, total, step):
         chunk = photo_ids[start:start + step]
         say(f"Fresh render {min(start + len(chunk), total)}/{total} photo(s) in Lightroom…")
-        timeout = max(_MIN_TIMEOUT, _SECONDS_PER_PHOTO * len(chunk))
+        timeout = budget.job_timeout(len(chunk), width, height, 0.0, "fetch")
         job_id = job_queue.submit(
             JobType.GET_THUMBNAILS,
-            {"photo_ids": chunk, "width": width, "height": height},
+            {
+                "photo_ids": chunk, "width": width, "height": height,
+                # Shipped so Lua derives its own wait from the same number
+                # (N3c) instead of a second, independently-tuned constant.
+                "timeout_s": timeout,
+            },
         )
         result = job_queue.wait_result(job_id, timeout)
         if result is None:

@@ -52,10 +52,13 @@ def _stub_gpu_and_fast_timeouts(monkeypatch):
     dual = RenderAnalysisDual(sharp=make_analysis(), glob=make_analysis(), mask_sharp_frac=0.5)
     monkeypatch.setattr(npw.gpu_jpeg, "decode_file", lambda path: object())
     monkeypatch.setattr(npw.render_metrics_gpu, "analyze_rendered_gpu_dual", lambda chw: dual)
-    # Real constants (30s floor, 4s/photo) would make a no-response test take
-    # 30s+ for real — this is control-flow testing, not timing testing.
-    monkeypatch.setattr(npw, "_MIN_TIMEOUT", 0.5)
-    monkeypatch.setattr(npw, "_SECONDS_PER_PHOTO", 0.05)
+    # Real budget constants (30s floor, ~10.5s/photo at 2048x2048) would make a
+    # no-response test take 30s+ for real — this is control-flow testing, not
+    # timing testing (N3: timeouts now come from app.server.budget).
+    monkeypatch.setattr(npw.budget, "MIN_TIMEOUT", 0.5)
+    monkeypatch.setattr(npw.budget, "PROBE_S_PER_MPX", 0.001)
+    monkeypatch.setattr(npw.budget, "PROBE_MIN", 0.05)
+    monkeypatch.setattr(npw.budget, "JOB_OVERHEAD", 0.0)
     monkeypatch.setattr(npw, "DEFAULT_SETTLE", 0.0)
     monkeypatch.setattr(npw, "_RETRY_SETTLE", 0.0)
 

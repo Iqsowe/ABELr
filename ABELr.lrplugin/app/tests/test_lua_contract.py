@@ -71,3 +71,22 @@ def test_fetch_probe_does_not_silently_drop_unresolved_or_apply_failures():
     assert "uuid not found" in text
     assert "applyErrors" in text
     assert "APPLY FAILED" in text
+
+
+def test_thumbnails_fetch_reads_a_budget_argument():
+    """PLAN.md N3c — Thumbnails.fetch/fetchProbe must consume a shipped budget,
+    not fall back to a single hardcoded per-photo constant unconditionally."""
+    text = THUMBNAILS_LUA.read_text(encoding="utf-8")
+    assert "function Thumbnails.fetch(photos, width, height, budget)" in text
+    assert "function Thumbnails.fetchProbe(adjustments, width, height, settle, budget)" in text
+    assert "LUA_BUDGET_FRACTION" in text
+
+
+def test_polling_loop_forwards_timeout_s_on_both_branches():
+    """PLAN.md N3c/N3d — guards against Lua reverting to a hardcoded constant
+    while Python keeps shipping a budget in the payload."""
+    text = POLLING_LOOP_LUA.read_text(encoding="utf-8")
+    thumbs_block = _branch(text, "get_thumbnails")
+    probe_block = _branch(text, "render_probe")
+    assert "payload.timeout_s" in thumbs_block
+    assert "payload.timeout_s" in probe_block

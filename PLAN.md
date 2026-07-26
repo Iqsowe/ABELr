@@ -231,7 +231,7 @@ to test the full flow.
 Two hard-coded constants in two languages with no shared test will drift again — that's how this
 bug happened. The App computes the budget; Lua derives its wait from it.
 
-- [ ] **N3a — `app/server/budget.py` (new).** Next to `models.py` — it's part of the job
+- [x] **N3a — `app/server/budget.py` (new).** Next to `models.py` — it's part of the job
   contract, not image code:
   ```
   probe_seconds_per_photo(w, h) = max(PROBE_MIN, PROBE_S_PER_MPX * w*h/1e6)
@@ -251,12 +251,12 @@ bug happened. The App computes the budget; Lua derives its wait from it.
   "above the longest legitimate worker timeout" (`job_queue.py:36-39`) — fixing the budget
   invalidates the basis for that claim; this step re-establishes it (125 s → 7× margin).
 
-- [ ] **N3b — Ship the budget.** `_probe_chunk` adds `"timeout_s": timeout` to the payload
+- [x] **N3b — Ship the budget.** `_probe_chunk` adds `"timeout_s": timeout` to the payload
   (`neutral_preview_worker.py:88-95`); `fetch_thumbnails_chunked` does the same
   (`fresh_render_worker.py:57-60`). Both replace their local constants with `budget.*`.
   `chunk_size` stays overridable as a parameter (tests use it).
 
-- [ ] **N3c — Lua consumes the budget.** `PollingLoop.lua` forwards `payload.timeout_s` into
+- [x] **N3c — Lua consumes the budget.** `PollingLoop.lua` forwards `payload.timeout_s` into
   `Thumbnails.fetch(photos, w, h, budget)` and `fetchProbe(adjustments, w, h, settle, budget)`.
   `fetch` uses `timeout = budget * 0.8` when a budget is given.
   **Why 0.8, not equality**: Lua must return a partial result with per-photo errors before Python
@@ -267,7 +267,7 @@ bug happened. The App computes the budget; Lua derives its wait from it.
   `max(FLOOR, n * 0.4 * (w*h)/(512*512))` — also fixes the MCP path, where 0.4 was only ever
   correct because the default was 512.
 
-- [ ] **N3d — Anti-drift tests.** `app/tests/test_probe_budget.py`: monotonic in n and
+- [x] **N3d — Anti-drift tests.** `app/tests/test_probe_budget.py`: monotonic in n and
   resolution, floor respected, `chunk_size × per_photo ≤ TARGET_JOB_SECONDS`,
   `job_timeout < JobQueue._ENTRY_TTL` for the largest legal chunk, `LUA_BUDGET_FRACTION < 1`.
   Extend `test_lua_contract.py`: `Thumbnails.lua` reads a budget argument, `PollingLoop.lua`

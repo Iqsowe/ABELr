@@ -19,18 +19,16 @@ local Utils         = require 'Utils'
 local Thumbnails = {}
 
 local THUMB_TIMEOUT = 15  -- floor: max seconds for a small batch of thumbnails
--- Per-photo budget above the floor: on a large selection, requestJpegThumbnail
--- may need to regenerate every preview. Effective timeout = max(floor, n * this budget).
--- Only valid for the "already cached / no-op" path (measured ~0.26-0.74s/photo,
--- PLAN.md N section) — do NOT reuse for a forced-regeneration caller (see
--- PROBE_SECONDS_PER_PHOTO below).
+-- Fallback per-photo budget when the App doesn't ship a "timeout_s" (older
+-- App, MCP tools) — PLAN.md N3c. The shared app.server.budget module is the
+-- source of truth; this is only the resolution-scaled fallback formula,
+-- kept in sync by test_lua_contract.py.
 local THUMB_SECONDS_PER_PHOTO = 0.4
--- Thumbnails.fetchProbe forces a real regeneration (apply -> settle -> render):
--- measured 4.3-7.4s/photo (median 5.7, PLAN.md N section) at 2048x2048, ~22x
--- THUMB_SECONDS_PER_PHOTO. Reusing the plain constant there always lost the
--- timeout race against the App's own per-chunk budget. Stopgap ahead of the
--- shared budget.py (PLAN.md N3) — replace when that lands.
-local PROBE_SECONDS_PER_PHOTO = 10
+-- Budget shipped by the App (PLAN.md N3a/b) is a total job timeout; Lua only
+-- waits a FRACTION of it — the App must see a partial result with per-photo
+-- errors before it gives up, or a bare Python-side timeout carries zero
+-- diagnostic. Mirrors app.server.budget.LUA_BUDGET_FRACTION.
+local LUA_BUDGET_FRACTION = 0.8
 -- Delay given to Lr to regenerate the preview after an applyDevelopSettings, before
 -- requesting the probed thumbnail (cf. Thumbnails.fetchProbe).
 local SETTLE = 0.6
@@ -65,29 +63,34 @@ local function purgeStaleFiles(currentGen)
 end
 
 --[[
-    Thumbnails.fetch(photos, width, height, secondsPerPhoto)
+    Thumbnails.fetch(photos, width, height, budget)
 
     `photos`: table of LrPhoto (e.g. catalog:getTargetPhotos()).
     `width`, `height`: max thumbnail size (default 512×512).
-    `secondsPerPhoto`: per-photo timeout budget (default THUMB_SECONDS_PER_PHOTO,
-    the "already cached" regime) — callers that force a regeneration first
-    (Thumbnails.fetchProbe) must pass a much larger value.
+    `budget`: total job timeout in seconds, shipped by the App
+    (PLAN.md N3, `payload.timeout_s`) — Lua waits `budget * LUA_BUDGET_FRACTION`.
+    When absent (older App, MCP tools), falls back to a resolution-scaled
+    default (N3c) — `n * THUMB_SECONDS_PER_PHOTO`, scaled by pixel count
+    against the 512×512 baseline it was originally measured at.
 
     Returns an array of tables:
         { photo_id, thumbnail_path, error }
     thumbnail_path = absolute path of the written JPEG, or nil on error.
 ]]
-function Thumbnails.fetch(photos, width, height, secondsPerPhoto)
+function Thumbnails.fetch(photos, width, height, budget)
     width  = width  or 512
     height = height or 512
-    secondsPerPhoto = secondsPerPhoto or THUMB_SECONDS_PER_PHOTO
 
     local dir     = thumbsDir()
     local pending = #photos
     local results = {}
-    -- Effective timeout: floor for a small batch, otherwise proportional to the
-    -- number of photos (each preview may require a regeneration on Lr's side).
-    local timeout = math.max(THUMB_TIMEOUT, #photos * secondsPerPhoto)
+    local timeout
+    if budget then
+        timeout = math.max(THUMB_TIMEOUT, budget * LUA_BUDGET_FRACTION)
+    else
+        timeout = math.max(THUMB_TIMEOUT,
+            #photos * THUMB_SECONDS_PER_PHOTO * (width * height) / (512 * 512))
+    end
 
     fetchGen = fetchGen + 1
     local gen  = fetchGen
@@ -166,7 +169,7 @@ function Thumbnails.fetch(photos, width, height, secondsPerPhoto)
 end
 
 --[[
-    Thumbnails.fetchByIds(photoIds, width, height)
+    Thumbnails.fetchByIds(photoIds, width, height, budget)
 
     Resolves `photoIds` (uuids) against the current selection, with a
     catalog:findPhotoByUuid fallback (same pattern as Adjustments.apply /
@@ -180,10 +183,12 @@ end
     non-trivial selection (e.g. 693 photos -> 277s internal wait vs a 24s
     per-chunk budget on the App side).
 
+    `budget`: forwarded to Thumbnails.fetch (PLAN.md N3, `payload.timeout_s`).
+
     Unresolved uuids get their own error row (never silently dropped),
     same convention as fetchProbe.
 ]]
-function Thumbnails.fetchByIds(photoIds, width, height)
+function Thumbnails.fetchByIds(photoIds, width, height, budget)
     local catalog = LrApplication.activeCatalog()
     local byUuid = {}
     for _, photo in ipairs(catalog:getTargetPhotos()) do
@@ -200,7 +205,7 @@ function Thumbnails.fetchByIds(photoIds, width, height)
         end
     end
 
-    local results = Thumbnails.fetch(photos, width, height)
+    local results = Thumbnails.fetch(photos, width, height, budget)
     for _, id in ipairs(unresolved) do
         results[#results + 1] = { photo_id = id, thumbnail_path = nil, error = 'uuid not found' }
     end
@@ -208,7 +213,7 @@ function Thumbnails.fetchByIds(photoIds, width, height)
 end
 
 --[[
-    Thumbnails.fetchProbe(adjustments, width, height, settle)
+    Thumbnails.fetchProbe(adjustments, width, height, settle, budget)
 
     PROBED render: applies temporary settings, renders the thumbnail of the
     resulting state, then RESTORES the original develop state. Used to calibrate
@@ -218,6 +223,10 @@ end
     `adjustments`: list of { photo_id = uuid, develop = { PascalCase = value } }.
     `settle`      : seconds given to Lr to regenerate the preview after the apply
                     (default SETTLE) — the App can increase it if the render is stale.
+    `budget`      : total job timeout (PLAN.md N3, `payload.timeout_s`) — the time
+                    already spent on the apply transaction + settle is subtracted
+                    before delegating the remainder to Thumbnails.fetch, so the
+                    render wait doesn't also eat the App's per-photo margin.
     Returns the same format as Thumbnails.fetch, enriched with `asshot_temp` /
     `asshot_tint`: numeric Temperature/Tint read back AFTER the apply — if the probe
     contains WhiteBalance='As Shot', this is the only chance to observe the As Shot's
@@ -232,10 +241,11 @@ end
     Mutates the develop history (apply then restore) -> reserved for occasional
     calibration, not for bulk per-photo processing.
 ]]
-function Thumbnails.fetchProbe(adjustments, width, height, settle)
+function Thumbnails.fetchProbe(adjustments, width, height, settle, budget)
     width  = width  or 512
     height = height or 512
     settle = settle or SETTLE
+    local probeStart = os.time()
     local catalog = LrApplication.activeCatalog()
 
     -- uuid -> photo index over the current selection, with findPhotoByUuid fallback:
@@ -290,12 +300,13 @@ function Thumbnails.fetchProbe(adjustments, width, height, settle)
     -- Lets Lr regenerate the preview before requesting the thumbnails.
     LrTasks.sleep(settle)
 
-    -- 2. Renders the thumbnails of the probed state. Forced regeneration
-    -- (just applied above) -- PROBE_SECONDS_PER_PHOTO, not the plain
-    -- THUMB_SECONDS_PER_PHOTO (that one assumes an already-cached preview).
+    -- 2. Renders the thumbnails of the probed state. Remaining budget = the
+    -- job's total timeout minus what the apply transaction + settle already
+    -- spent (both counted against the same budget the App is waiting on).
     local photos = {}
     for _, t in ipairs(targets) do photos[#photos + 1] = t.photo end
-    local results = Thumbnails.fetch(photos, width, height, PROBE_SECONDS_PER_PHOTO)
+    local remainingBudget = budget and (budget - (os.time() - probeStart)) or nil
+    local results = Thumbnails.fetch(photos, width, height, remainingBudget)
 
     -- Unresolvable photo_id's get their own result row (never silently dropped).
     for _, id in ipairs(unresolved) do

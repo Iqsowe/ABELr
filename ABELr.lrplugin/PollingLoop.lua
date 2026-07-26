@@ -111,15 +111,16 @@ local function dispatch(job)
         local payload  = job.payload or {}
         local width    = payload.width  or 512
         local height   = payload.height or 512
+        local budget   = payload.timeout_s
         local thumbs
         if payload.photo_ids and #payload.photo_ids > 0 then
             -- Only the requested photos (see Thumbnails.fetchByIds): a chunked
             -- caller must not pay for -- or wait on -- the whole selection.
-            thumbs = Thumbnails.fetchByIds(payload.photo_ids, width, height)
+            thumbs = Thumbnails.fetchByIds(payload.photo_ids, width, height, budget)
         else
             -- No filter given: whole current selection (manual/legacy calls).
             local catalog = LrApplication.activeCatalog()
-            thumbs = Thumbnails.fetch(catalog:getTargetPhotos(), width, height)
+            thumbs = Thumbnails.fetch(catalog:getTargetPhotos(), width, height, budget)
         end
         local out, errors, nOk = Json.array({}), {}, 0
         for _, t in ipairs(thumbs) do
@@ -158,7 +159,8 @@ local function dispatch(job)
         local width       = payload.width  or 512
         local height      = payload.height or 512
         local settle      = payload.settle
-        local thumbs      = Thumbnails.fetchProbe(adjustments, width, height, settle)
+        local budget      = payload.timeout_s
+        local thumbs      = Thumbnails.fetchProbe(adjustments, width, height, settle, budget)
         local out, errors, nOk = Json.array({}), {}, 0
         for _, t in ipairs(thumbs) do
             out[#out + 1] = {
