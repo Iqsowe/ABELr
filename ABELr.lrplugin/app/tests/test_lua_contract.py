@@ -100,6 +100,18 @@ def test_fetch_probe_refreshes_heartbeat_in_every_loop_and_slices_settle():
     assert "math.min(1, settleLeft)" in body
 
 
+def test_thumbnails_gen_persisted_across_reload_and_dir_not_duplicated():
+    """PLAN.md N4b — generation counter must survive a plugin reload (a plain
+    module-local resets to 0, letting `_<gen>.jpg` filenames collide across
+    reloads), and the thumbsDir() path/creation logic must have one owner
+    (Utils), not a second private copy inside Thumbnails.lua."""
+    text = THUMBNAILS_LUA.read_text(encoding="utf-8")
+    assert "_G.ABELR_THUMB_GEN" in text
+    assert "local function thumbsDir()" not in text
+    assert "Utils.thumbsDir()" in text
+    assert "local function sweepOldFiles(" in text
+
+
 def test_polling_loop_forwards_timeout_s_on_both_branches():
     """PLAN.md N3c/N3d — guards against Lua reverting to a hardcoded constant
     while Python keeps shipping a budget in the payload."""

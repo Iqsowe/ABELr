@@ -3,6 +3,7 @@
 ]]
 
 local LrPathUtils = import 'LrPathUtils'
+local LrFileUtils = import 'LrFileUtils'
 local LrLogger    = import 'LrLogger'
 local LrDialogs   = import 'LrDialogs'
 
@@ -33,9 +34,15 @@ function Utils.appDir()
     return LrPathUtils.child(Utils.projectRoot(), 'app')
 end
 
--- Temporary thumbnails directory (.../ABELr.lrplugin/tmp_thumbs).
+-- Temporary thumbnails directory (.../ABELr.lrplugin/tmp_thumbs), created on
+-- first use. Single owner of this path + creation (PLAN.md N4b — was
+-- duplicated as a private thumbsDir() inside Thumbnails.lua).
 function Utils.thumbsDir()
-    return LrPathUtils.child(Utils.projectRoot(), 'tmp_thumbs')
+    local dir = LrPathUtils.child(Utils.projectRoot(), 'tmp_thumbs')
+    if not LrFileUtils.exists(dir) then
+        LrFileUtils.createDirectory(dir)
+    end
+    return dir
 end
 
 function Utils.test()

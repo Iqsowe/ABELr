@@ -11,6 +11,7 @@
 ]]
 
 local LrApplication = import 'LrApplication'
+local LrDate        = import 'LrDate'
 local LrFileUtils   = import 'LrFileUtils'
 local LrPathUtils   = import 'LrPathUtils'
 local LrTasks       = import 'LrTasks'
@@ -33,22 +34,27 @@ local LUA_BUDGET_FRACTION = 0.8
 -- requesting the probed thumbnail (cf. Thumbnails.fetchProbe).
 local SETTLE = 0.6
 
--- Output directory: {projectRoot}/tmp_thumbs (created if missing).
-local function thumbsDir()
-    local dir = LrPathUtils.child(Utils.projectRoot(), 'tmp_thumbs')
-    if not LrFileUtils.exists(dir) then
-        LrFileUtils.createDirectory(dir)
-    end
-    return dir
-end
-
 -- Fetch generation: suffixes output files (a unique name per call) and arms
 -- the anti-late-callback guard (Fable 5 review L-01/L-02). Without it, a
 -- callback arriving after timeout could overwrite the next job's fresh file
 -- (the App would measure stale pixels) or mutate a `results` already returned.
-local fetchGen = 0
+--
+-- Persisted in _G.ABELR_THUMB_GEN, not a plain module-local (PLAN.md N4b):
+-- a plain local resets to 0 on every plugin reload, so generation numbers get
+-- reused across a reload — on-disk evidence showed 22 files named `*_3.jpg`
+-- written across two different days. Not a live correctness bug today (a
+-- path is only returned from a successful callback), but the late-callback
+-- guard (`gen ~= fetchGen` below) shouldn't be the only protection left
+-- standing against a stale generation number colliding with a fresh one.
+local function nextGen()
+    _G.ABELR_THUMB_GEN = (_G.ABELR_THUMB_GEN or 0) + 1
+    return _G.ABELR_THUMB_GEN
+end
+
 -- Files written per generation, purged two generations later (by then the App
--- has consumed the JPEGs — it reads them as soon as the job returns).
+-- has consumed the JPEGs — it reads them as soon as the job returns). Reset
+-- on reload like any module-local — the startup sweep below (N4b) is the
+-- backstop for files a purge never got to run for (crash, reload mid-fetch).
 local staleFiles = {}
 
 local function purgeStaleFiles(currentGen)
@@ -59,6 +65,30 @@ local function purgeStaleFiles(currentGen)
             end
             staleFiles[g] = nil
         end
+    end
+end
+
+-- Sweeps tmp_thumbs of files older than `maxAgeHours` (PLAN.md N4b) — the
+-- backstop for the leak the in-memory staleFiles/gen tracking above cannot
+-- cover across a plugin reload or a crash. LrDate.currentTime() and
+-- LrFileUtils.fileAttributes().fileModificationDate share the same epoch
+-- (Cocoa time), unlike os.time() (Unix epoch) — comparing across the two
+-- would misjudge every file's age by decades.
+local function sweepOldFiles(maxAgeHours)
+    local dir = Utils.thumbsDir()
+    local cutoff = maxAgeHours * 3600
+    local now = LrDate.currentTime()
+    local swept = 0
+    for path in LrFileUtils.files(dir) do
+        local attrs = LrFileUtils.fileAttributes(path)
+        local mtime = attrs and attrs.fileModificationDate
+        if mtime and (now - mtime) > cutoff then
+            LrFileUtils.delete(path)
+            swept = swept + 1
+        end
+    end
+    if swept > 0 then
+        Utils.logf('Thumbnails: swept %d stale file(s) from tmp_thumbs (>%gh old)', swept, maxAgeHours)
     end
 end
 
@@ -81,7 +111,7 @@ function Thumbnails.fetch(photos, width, height, budget)
     width  = width  or 512
     height = height or 512
 
-    local dir     = thumbsDir()
+    local dir     = Utils.thumbsDir()
     local pending = #photos
     local results = {}
     local timeout
@@ -92,8 +122,7 @@ function Thumbnails.fetch(photos, width, height, budget)
             #photos * THUMB_SECONDS_PER_PHOTO * (width * height) / (512 * 512))
     end
 
-    fetchGen = fetchGen + 1
-    local gen  = fetchGen
+    local gen  = nextGen()
     local done = false      -- true after the wait: late callbacks stop writing anything
     purgeStaleFiles(gen)
 
@@ -111,7 +140,7 @@ function Thumbnails.fetch(photos, width, height, budget)
 
         -- requestJpegThumbnail is async: callback fires when the thumbnail is ready.
         requests[i] = photo:requestJpegThumbnail(width, height, function(jpeg, err)
-            if done or gen ~= fetchGen then
+            if done or gen ~= (_G.ABELR_THUMB_GEN or 0) then
                 Utils.logf('Thumbnail: late callback ignored (gen %d) for %s', gen, photoId)
                 return
             end
@@ -370,5 +399,9 @@ function Thumbnails.fetchProbe(adjustments, width, height, settle, budget)
 
     return results
 end
+
+-- Startup sweep (PLAN.md N4b): runs once when the module is (re)loaded —
+-- catches files a mid-session purge never got to (crash, reload mid-fetch).
+sweepOldFiles(24)
 
 return Thumbnails
