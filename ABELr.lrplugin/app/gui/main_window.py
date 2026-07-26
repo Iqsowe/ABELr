@@ -33,6 +33,7 @@ from __future__ import annotations
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -90,14 +91,24 @@ class MainWindow(QMainWindow):
         self.progress_bar.setTextVisible(True)
         self.progress_bar.setVisible(False)
 
-        # Diagnostics.
+        # Diagnostics — a status-bar item, not a workflow step (U1).
         self.test_btn = QPushButton("Test bridge")
+
+        # 1. Catalog.
         self.analyze_catalog_btn = QPushButton("Analyze Catalog")
 
-        # References (seeds).
+        # 2. References (seeds).
         self.mark_refs_btn = QPushButton("Mark + analyze references")
         self.unmark_refs_btn = QPushButton("Remove from references")
-        self.calibrate_neutral_btn = QPushButton("Calibrate Neutral Previews")
+
+        # 3. Correction — embedded-mode-only prep step, relabeled to say what
+        # it does (U1); enabled only when cb_embedded is checked.
+        self.calibrate_neutral_btn = QPushButton("Prepare neutral anchors")
+        self.calibrate_neutral_btn.setToolTip(
+            "Embedded mode only: pre-renders the neutral anchor (WB As Shot, "
+            "Exposure 0, HSL 0) for the current selection so the next Preview/"
+            "Apply doesn't pay for it inline."
+        )
 
         # Axes + reference.
         self.cb_expo = QCheckBox("Exposure")
@@ -136,25 +147,30 @@ class MainWindow(QMainWindow):
         self.calibrate_neutral_btn.clicked.connect(lambda: self._begin("neutral"))
         self.preview_btn.clicked.connect(lambda: self._begin("preview"))
         self.apply_btn.clicked.connect(self._on_apply_click)
+        self.cb_embedded.toggled.connect(self._refresh_neutral_btn_enabled)
 
         layout = QVBoxLayout()
         layout.addWidget(self.bridge_label)
         layout.addWidget(self.status_label)
         layout.addWidget(self.progress_bar)
 
-        tools_row = QHBoxLayout()
-        tools_row.addWidget(self.test_btn)
-        tools_row.addWidget(self.analyze_catalog_btn)
-        tools_row.addStretch()
-        layout.addLayout(tools_row)
+        # U1: numbered groups reflecting the real usage order (previously the
+        # order lived only in the module docstring, invisible to the user).
+        group1 = QGroupBox("1. Catalog")
+        g1_row = QHBoxLayout(group1)
+        g1_row.addWidget(self.analyze_catalog_btn)
+        g1_row.addStretch()
+        layout.addWidget(group1)
 
-        refs_row = QHBoxLayout()
-        refs_row.addWidget(self.mark_refs_btn)
-        refs_row.addWidget(self.unmark_refs_btn)
-        refs_row.addWidget(self.calibrate_neutral_btn)
-        refs_row.addStretch()
-        layout.addLayout(refs_row)
+        group2 = QGroupBox("2. References")
+        g2_row = QHBoxLayout(group2)
+        g2_row.addWidget(self.mark_refs_btn)
+        g2_row.addWidget(self.unmark_refs_btn)
+        g2_row.addStretch()
+        layout.addWidget(group2)
 
+        group3 = QGroupBox("3. Correction")
+        g3 = QVBoxLayout(group3)
         axes_row = QHBoxLayout()
         axes_row.addWidget(QLabel("Axes:"))
         axes_row.addWidget(self.cb_expo)
@@ -163,11 +179,16 @@ class MainWindow(QMainWindow):
         axes_row.addWidget(self.cb_calib)
         axes_row.addSpacing(16)
         axes_row.addWidget(self.cb_embedded)
-        axes_row.addSpacing(16)
-        axes_row.addWidget(self.preview_btn)
-        axes_row.addWidget(self.apply_btn)
         axes_row.addStretch()
-        layout.addLayout(axes_row)
+        g3.addLayout(axes_row)
+        actions_row = QHBoxLayout()
+        actions_row.addWidget(self.calibrate_neutral_btn)
+        actions_row.addSpacing(16)
+        actions_row.addWidget(self.preview_btn)
+        actions_row.addWidget(self.apply_btn)
+        actions_row.addStretch()
+        g3.addLayout(actions_row)
+        layout.addWidget(group3)
 
         layout.addWidget(self.plan_summary_label)
         layout.addWidget(self.photo_list)
@@ -175,6 +196,11 @@ class MainWindow(QMainWindow):
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
+
+        # "Test bridge" is a diagnostic, not a workflow step (U1) — status bar.
+        self.statusBar().addPermanentWidget(self.test_btn)
+
+        self._refresh_neutral_btn_enabled()
 
         self._bridge_timer = QTimer(self)
         self._bridge_timer.timeout.connect(self._refresh_bridge)
@@ -195,11 +221,16 @@ class MainWindow(QMainWindow):
             )
 
     def _set_actions_enabled(self, enabled: bool) -> None:
-        for btn in (
-            self.mark_refs_btn, self.unmark_refs_btn, self.calibrate_neutral_btn,
-            self.preview_btn, self.apply_btn,
-        ):
+        for btn in (self.mark_refs_btn, self.unmark_refs_btn, self.preview_btn, self.apply_btn):
             btn.setEnabled(enabled)
+        # calibrate_neutral_btn has its own extra gate (embedded mode only) —
+        # re-derive rather than blindly setEnabled(enabled).
+        self._refresh_neutral_btn_enabled(busy=not enabled)
+
+    def _refresh_neutral_btn_enabled(self, *_args, busy: bool = False) -> None:
+        """U1: "Prepare neutral anchors" only makes sense in embedded mode.
+        `*_args` absorbs the bool QCheckBox.toggled emits when used as a slot."""
+        self.calibrate_neutral_btn.setEnabled(self.cb_embedded.isChecked() and not busy)
 
     # ------------------------------------------------------------------ #
     # Progress bar (image analysis / measurement)

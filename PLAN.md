@@ -484,7 +484,7 @@ Constraint: stay in PySide6, no new dependency; keep logic in pure, testable fun
 COV5 decision (GUI workers not unit-tested) stays valid, this reduces what it has to cover
 rather than working around it.
 
-- [ ] **U1 — Layout ordered by workflow.** Replace the 3 flat rows with numbered `QGroupBox`es
+- [x] **U1 — Layout ordered by workflow.** Replace the 3 flat rows with numbered `QGroupBox`es
   reflecting the real order: **1. Catalog** (Analyze Catalog) → **2. References** (Mark +
   analyze / Remove) → **3. Correction** (axes, mode, Preview, Apply). "Calibrate Neutral
   Previews" moves into group 3 as an embedded-mode action, relabeled to say what it does
