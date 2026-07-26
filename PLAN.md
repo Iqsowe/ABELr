@@ -600,17 +600,25 @@ parametrized case, no test breaks. Real risks are a surviving importer and
 ## Verification
 
 - `python -m pytest app/tests -q` green at every step (from `ABELr.lrplugin/`). Baseline: 285
-  tests. New files expected: `test_logging_setup.py`, `test_neutral_preview_flow.py`,
-  `test_lua_contract.py`, `test_probe_budget.py`, `test_gpu_raw_measure_parity.py`,
-  `test_gui_status.py`.
-- `python -m app.tools.check_docs` green (doc/code drift) after `A1`, `D3`, `D4`.
+  tests → **358 at N/G/R/X3/U/D1-D4 completion** (2026-07-26). New files: `test_logging_setup.py`,
+  `test_neutral_preview_flow.py`, `test_lua_contract.py`, `test_probe_budget.py`,
+  `test_gpu_raw_measure_parity.py`, `test_render_metrics_gpu_sync_grouping.py`,
+  `test_measure_grid.py` extensions, `test_mcp_tools.py` extension, `test_autocorrect_plan_axes.py`
+  extension, `test_gui_status.py`, `test_plan_format.py`.
+- `python -m app.tools.check_docs` green (doc/code drift) — reconfirmed after every step through
+  `D4`, no drift.
 - `python -m app.tools.mock_plugin`: the full neutral flow must pass **without Lightroom**
   (`N1`) — the criterion that guarantees the next regression will be visible.
 - `python -m app.tools.validate_seed_matching "<catalog folder>"` (S0): primary before/after
   evidence for `R3`, `X2`, `X4`.
-- **Lr required** for `N5`, `R3`, `X1`, `X4`: documented manual validation with numbers.
+- **Lr required, not run this session (deferred by user decision, code-only pass)**: `N5`, `R3`,
+  `X1`, `X2`, `X4`. Everything else (`N3`, `N4a`/`N4b`(code)/`N4c`, `G1`, `G2`, `G3`, `R1`, `R2`,
+  `X3`, `U1`-`U5`, `D1`-`D4`) is code-complete, tested, and merged to `dev260725`. Bridge was
+  confirmed live/connected mid-session (`mcp__abelr__bridge_status`) — the Lr-required steps are
+  ready to run whenever authorized, not blocked on anything technical.
 - `N`'s acceptance criterion: after a run on a selection of N photos,
-  `SELECT COUNT(*) FROM NeutralPreviewJPEG` = N (vs 4 today for 708 photos).
+  `SELECT COUNT(*) FROM NeutralPreviewJPEG` = N (vs 4 today for 708 photos) — **not yet verified
+  live** (N5 deferred).
 
 ## Risks
 
