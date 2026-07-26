@@ -42,6 +42,20 @@ local function bridgeAlive()
     return (os.time() - hb) < HEARTBEAT_TIMEOUT
 end
 
+-- Joins up to 5 error strings with ' | ', appending a "+N more" suffix beyond
+-- that. Shared by every job type that can partially fail (Fable 5 L-04):
+-- batchResult, apply_adjustments, get_thumbnails, render_probe (N2a).
+local function summarizeErrors(errors)
+    if not errors or #errors == 0 then return nil end
+    local parts = {}
+    for i = 1, math.min(5, #errors) do parts[#parts + 1] = errors[i] end
+    local summary = table.concat(parts, ' | ')
+    if #errors > 5 then
+        summary = summary .. string.format(' | +%d more', #errors - 5)
+    end
+    return summary
+end
+
 -- Builds the standard result table for a batch job (set_rating, set_keywords,
 -- add_to_collection, apply_develop_preset…) from a report
 -- { applied, total, errors }. Same errors_summary logic as apply_adjustments
@@ -51,15 +65,7 @@ local function batchResult(jobId, report)
     local applied = report.applied or 0
     local errors  = report.errors or {}
     local status  = (applied > 0 or total == 0) and 'ok' or 'error'
-    local errorsSummary = nil
-    if #errors > 0 then
-        local parts = {}
-        for i = 1, math.min(5, #errors) do parts[#parts + 1] = errors[i] end
-        errorsSummary = table.concat(parts, ' | ')
-        if #errors > 5 then
-            errorsSummary = errorsSummary .. string.format(' | +%d more', #errors - 5)
-        end
-    end
+    local errorsSummary = summarizeErrors(errors)
     local errMsg = nil
     if status == 'error' then
         errMsg = string.format('0/%d applied. %s',
@@ -114,7 +120,7 @@ local function dispatch(job)
         if payload.photo_ids and #payload.photo_ids > 0 then
             for _, id in ipairs(payload.photo_ids) do filter[id] = true end
         end
-        local out = Json.array({})
+        local out, errors, nOk = Json.array({}), {}, 0
         for _, t in ipairs(thumbs) do
             if not payload.photo_ids or #payload.photo_ids == 0 or filter[t.photo_id] then
                 out[#out + 1] = {
@@ -122,13 +128,28 @@ local function dispatch(job)
                     thumbnail_path = t.thumbnail_path,
                     error          = t.error,
                 }
+                if t.thumbnail_path then
+                    nOk = nOk + 1
+                else
+                    errors[#errors + 1] = t.error or ('unknown error: ' .. tostring(t.photo_id))
+                end
             end
         end
+        local total  = #out
+        -- Real status (N2a): a batch where every thumbnail failed must not
+        -- report 'ok' — the App used to trust this blindly.
+        local status = (nOk > 0 or total == 0) and 'ok' or 'error'
         return {
-            job_id     = jobId,
-            status     = 'ok',
-            thumbnails = out,
-            photos     = Json.array({}),
+            job_id         = jobId,
+            status         = status,
+            error          = status == 'error'
+                and string.format('0/%d thumbnail(s). %s', total, errors[1] or 'unknown error')
+                or nil,
+            errors_summary = summarizeErrors(errors),
+            applied        = nOk,
+            total          = total,
+            thumbnails     = out,
+            photos         = Json.array({}),
         }
     elseif jobType == 'render_probe' then
         -- Probe render: applies temporary settings, renders the thumbnail, restores.
@@ -139,7 +160,7 @@ local function dispatch(job)
         local height      = payload.height or 512
         local settle      = payload.settle
         local thumbs      = Thumbnails.fetchProbe(adjustments, width, height, settle)
-        local out = Json.array({})
+        local out, errors, nOk = Json.array({}), {}, 0
         for _, t in ipairs(thumbs) do
             out[#out + 1] = {
                 photo_id       = t.photo_id,
@@ -149,12 +170,28 @@ local function dispatch(job)
                 asshot_tint    = t.asshot_tint,
                 restore_error  = t.restore_error,
             }
+            if t.thumbnail_path then
+                nOk = nOk + 1
+            else
+                errors[#errors + 1] = t.error or ('unknown error: ' .. tostring(t.photo_id))
+            end
         end
+        local total  = #out
+        -- Real status (N2a): a probe batch where nothing rendered must not
+        -- report 'ok' — mcp/tools.py already raises on status != 'ok', so a
+        -- probe that used to "succeed" silently now fails loudly (the point).
+        local status = (nOk > 0 or total == 0) and 'ok' or 'error'
         return {
-            job_id     = jobId,
-            status     = 'ok',
-            thumbnails = out,
-            photos     = Json.array({}),
+            job_id         = jobId,
+            status         = status,
+            error          = status == 'error'
+                and string.format('0/%d render(s). %s', total, errors[1] or 'unknown error')
+                or nil,
+            errors_summary = summarizeErrors(errors),
+            applied        = nOk,
+            total          = total,
+            thumbnails     = out,
+            photos         = Json.array({}),
         }
     elseif jobType == 'apply_adjustments' then
         local payload = job.payload or {}
@@ -163,15 +200,7 @@ local function dispatch(job)
         local status = (report.applied > 0 or report.total == 0) and 'ok' or 'error'
         -- Error summary ALWAYS attached when there are any (Fable 5 review L-04):
         -- a PARTIAL apply (status='ok' with failures) no longer loses the causes.
-        local errorsSummary = nil
-        if #report.errors > 0 then
-            local parts = {}
-            for i = 1, math.min(5, #report.errors) do parts[#parts + 1] = report.errors[i] end
-            errorsSummary = table.concat(parts, ' | ')
-            if #report.errors > 5 then
-                errorsSummary = errorsSummary .. string.format(' | +%d more', #report.errors - 5)
-            end
-        end
+        local errorsSummary = summarizeErrors(report.errors)
         local errMsg = nil
         if status == 'error' then
             errMsg = string.format('0/%d applied (%d matched). %s',

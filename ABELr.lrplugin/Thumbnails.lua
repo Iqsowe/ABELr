@@ -190,8 +190,11 @@ function Thumbnails.fetchProbe(adjustments, width, height, settle)
         byUuid[photo:getRawMetadata('uuid')] = photo
     end
 
-    -- Captures the original state + lists the valid targets.
-    local targets, original = {}, {}
+    -- Captures the original state + lists the valid targets. Unresolvable
+    -- photo_id's are NOT silently dropped (Fable 5-style review N2b): they
+    -- get their own result row further down, mirroring Adjustments.lua's
+    -- "uuid not found" handling for apply_adjustments.
+    local targets, original, unresolved = {}, {}, {}
     for _, adj in ipairs(adjustments) do
         local photo = byUuid[adj.photo_id]
         if photo == nil then
@@ -200,13 +203,23 @@ function Thumbnails.fetchProbe(adjustments, width, height, settle)
         if photo and adj.develop then
             original[adj.photo_id] = photo:getDevelopSettings()  -- full snapshot
             targets[#targets + 1]  = { photo = photo, id = adj.photo_id, develop = adj.develop }
+        else
+            unresolved[#unresolved + 1] = adj.photo_id
         end
     end
 
-    -- 1. Applies the probed settings (transaction).
+    -- 1. Applies the probed settings (transaction). A failed apply leaves the
+    -- photo in its ORIGINAL state, but the thumbnail rendered below is then
+    -- indistinguishable from a real "neutral" anchor unless the failure is
+    -- surfaced — poisons embedded mode exactly like a stale probe, silently.
+    local applyErrors = {}
     catalog:withWriteAccessDo('ABELr: probe (apply)', function()
         for _, t in ipairs(targets) do
-            LrTasks.pcall(function() t.photo:applyDevelopSettings(t.develop) end)
+            local ok, err = LrTasks.pcall(function() t.photo:applyDevelopSettings(t.develop) end)
+            if not ok then
+                applyErrors[t.id] = tostring(err or 'apply failed')
+                Utils.logf('fetchProbe: APPLY FAILED for %s: %s', t.id, tostring(err))
+            end
         end
     end)
 
@@ -226,6 +239,11 @@ function Thumbnails.fetchProbe(adjustments, width, height, settle)
     local photos = {}
     for _, t in ipairs(targets) do photos[#photos + 1] = t.photo end
     local results = Thumbnails.fetch(photos, width, height)
+
+    -- Unresolvable photo_id's get their own result row (never silently dropped).
+    for _, id in ipairs(unresolved) do
+        results[#results + 1] = { photo_id = id, thumbnail_path = nil, error = 'uuid not found' }
+    end
 
     -- 3. Restores the original state (transaction). A restore failure leaves the
     -- photo in a NEUTRAL state (WB As Shot / Exp 0 / HSL 0): it must surface in
@@ -258,6 +276,13 @@ function Thumbnails.fetchProbe(adjustments, width, height, settle)
             -- The restore failure takes priority: the rendered thumbnail is that of
             -- a state the photo will not leave -- a strong signal for the App.
             results[i].error = results[i].error or ('restore failed: ' .. restoreErr)
+        end
+        local applyErr = applyErrors[results[i].photo_id]
+        if applyErr then
+            -- The render below reflects the CURRENT (unchanged) style, not the
+            -- probed one -- for a neutral-anchor probe this looks like a valid
+            -- anchor while silently being stale. Must not be swallowed.
+            results[i].error = results[i].error or ('apply failed: ' .. applyErr)
         end
     end
 

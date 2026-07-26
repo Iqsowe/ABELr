@@ -33,6 +33,7 @@ for an absolute WB correction. This read effectively verifies the assumption
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Callable
 
 from PySide6.QtCore import QThread, Signal
@@ -42,6 +43,11 @@ from ..server.job_queue import job_queue
 from ..server.models import JobType, PhotoResult, ThumbnailResult
 
 _log = logging.getLogger("abelr.neutral_preview")
+
+# Circuit breaker (N2c): this many CONSECUTIVE chunks with zero successes
+# aborts the run instead of grinding through every remaining chunk — a dead
+# bridge or a systematic plugin failure shows up in the first 2 chunks.
+_CIRCUIT_BREAKER_CHUNKS = 2
 
 # Neutral render settings: as-shot WB + flat exposure + neutralized HSL,
 # the rest of the style (DCP profile, tone, Color Grading, crop) untouched.
@@ -73,13 +79,26 @@ _SUSPECT_MIN_EXPO = 0.3
 _SUSPECT_MAX_DELTA_L = 2.0
 
 
+def _top_reasons(failures: dict[str, str], top_n: int = 3) -> str:
+    """Formats the `top_n` most common distinct failure reasons with counts."""
+    if not failures:
+        return "no reason recorded"
+    counts: dict[str, int] = {}
+    for reason in failures.values():
+        counts[reason] = counts.get(reason, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])[:top_n]
+    return ", ".join(f"{reason} (x{n})" for reason, n in ranked)
+
+
 def _probe_chunk(
     chunk: list[PhotoResult], settle: float, timeout: float
-) -> dict[str, tuple[ThumbnailResult, object]]:
+) -> tuple[dict[str, tuple[ThumbnailResult, object]], dict[str, str]]:
     """Submits a render_probe job for `chunk`, decodes+measures the thumbnails (GPU).
 
-    Returns {photo_id: (ThumbnailResult, RenderAnalysisDual)} — photos without a
-    usable thumbnail are absent. Raises RuntimeError if the plugin doesn't respond.
+    Returns `(out, failures)`: `out[photo_id] = (ThumbnailResult, RenderAnalysisDual)`
+    for photos with a usable render; `failures[photo_id] = reason` for every other
+    photo in `chunk` (job-level error, missing thumbnail, or a failed JPEG decode).
+    Raises RuntimeError if the plugin never responds at all (no result submitted).
     """
     adjustments = [
         {"photo_id": p.photo_id, "develop": dict(_NEUTRAL_DEVELOP)} for p in chunk
@@ -99,15 +118,33 @@ def _probe_chunk(
             "Timeout — the Lr plugin did not return the neutral renders "
             "(is Lightroom open and the bridge connected?)."
         )
+
     out: dict[str, tuple[ThumbnailResult, object]] = {}
-    for t in result.thumbnails:
+    failures: dict[str, str] = {}
+
+    if result.status != "ok":
+        # Job-level failure (N2a: the plugin now tells the truth here) — every
+        # photo in the chunk failed, there is nothing per-photo to decode.
+        reason = result.error or result.errors_summary or "render_probe reported an error"
+        for p in chunk:
+            failures[p.photo_id] = reason
+        return out, failures
+
+    by_photo = {t.photo_id: t for t in result.thumbnails}
+    for p in chunk:
+        t = by_photo.get(p.photo_id)
+        if t is None:
+            failures[p.photo_id] = "no result for this photo"
+            continue
         if not t.thumbnail_path:
+            failures[p.photo_id] = t.error or "no thumbnail returned"
             continue
         chw = gpu_jpeg.decode_file(t.thumbnail_path)
         if chw is None:
+            failures[p.photo_id] = "jpeg decode failed"
             continue
-        out[t.photo_id] = (t, render_metrics_gpu.analyze_rendered_gpu_dual(chw))
-    return out
+        out[p.photo_id] = (t, render_metrics_gpu.analyze_rendered_gpu_dual(chw))
+    return out, failures
 
 
 def _anchor_suspect(p: PhotoResult, dual, conn) -> bool:
@@ -134,6 +171,44 @@ def _anchor_suspect(p: PhotoResult, dual, conn) -> bool:
     return abs(dual.sharp.tone.median_l - prev.tone.median_l) < _SUSPECT_MAX_DELTA_L
 
 
+@dataclass
+class NeutralPreviewOutcome:
+    """Result of `ensure_neutral_previews` (PLAN.md N2c — replaces a bare 2-tuple
+    so failures are no longer discarded on the way back to the caller)."""
+
+    by_id: dict[str, dict]
+    n_refreshed: int
+    n_requested: int
+    failures: dict[str, str]
+
+
+def _summarize(outcome: NeutralPreviewOutcome, n_photos: int) -> tuple[bool, str]:
+    """Decides failed vs. success and builds the summary message.
+
+    Extracted out of `NeutralPreviewWorker.run` (N1b) so it's testable
+    without Qt. `failed=True` when every requested anchor failed to refresh
+    — previously this case still emitted a "calibrated" success message
+    (fake success, N2c's reason for existing).
+    """
+    n_missing = n_photos - len(outcome.by_id)
+    if outcome.n_refreshed == 0 and outcome.n_requested > 0:
+        return True, (
+            f"Neutral render failed for all {outcome.n_requested} requested "
+            f"photo(s): {_top_reasons(outcome.failures, 3)}"
+        )
+    if outcome.n_refreshed == 0 and n_missing == 0:
+        return False, f"Neutral renders already up to date ({n_photos} photo(s), cache)."
+    msg = (
+        f"Neutral renders calibrated: {outcome.n_refreshed} recomputed, "
+        f"{len(outcome.by_id)}/{n_photos} available"
+    )
+    if n_missing:
+        msg += f" ({n_missing} failed: {_top_reasons(outcome.failures, 3)})."
+    else:
+        msg += "."
+    return False, msg
+
+
 def ensure_neutral_previews(
     photos: list[PhotoResult],
     conn,
@@ -142,19 +217,21 @@ def ensure_neutral_previews(
     progress_count: Callable[[int, int], None] | None = None,
     chunk_size: int = _CHUNK_SIZE,
     settle: float = DEFAULT_SETTLE,
-) -> tuple[dict[str, dict], int]:
+) -> NeutralPreviewOutcome:
     """Ensures an up-to-date neutral render (`NeutralPreviewJPEG` cache) for each photo.
 
     Cache hits (`hash_style` up to date) are served without I/O; misses trigger
-    plugin `render_probe` jobs in batches, decoded and measured on GPU. Returns
-    `(by_id, n_refreshed)`: `by_id[uuid]` = `cache.get_neutral_preview` dict
+    plugin `render_probe` jobs in batches, decoded and measured on GPU.
+    `outcome.by_id[uuid]` = `cache.get_neutral_preview` dict
     (sharp/glob/asshot_temp/asshot_tint/mask_sharp_frac), photos without a
-    thumbnail are absent from the dict; `n_refreshed` = number of anchors
-    recomputed via the plugin.
+    thumbnail are absent from the dict; `outcome.n_refreshed` = number of
+    anchors recomputed via the plugin; `outcome.failures[uuid]` = reason for
+    every requested photo that did NOT end up in `by_id`.
 
-    Raises RuntimeError if the plugin doesn't respond or if an anchor stays
-    suspect (stale probe) after retry — in that case nothing is cached for
-    those photos.
+    Raises RuntimeError if the plugin doesn't respond, if an anchor stays
+    suspect (stale probe) after retry, or if the circuit breaker trips
+    (`_CIRCUIT_BREAKER_CHUNKS` consecutive chunks with zero successes) — in
+    all three cases, remaining chunks are never submitted.
     """
     say = progress or (lambda _msg: None)
     tick = progress_count or (lambda _done, _total: None)
@@ -171,6 +248,9 @@ def ensure_neutral_previews(
             todo.append(p)
 
     n_refreshed = 0
+    n_requested = len(todo)
+    failures: dict[str, str] = {}
+    consecutive_zero_success = 0
     step = max(1, chunk_size)
     for start in range(0, len(todo), step):
         chunk = todo[start:start + step]
@@ -180,10 +260,12 @@ def ensure_neutral_previews(
         )
         tick(start, len(todo))
         timeout = max(_MIN_TIMEOUT, _SECONDS_PER_PHOTO * len(chunk))
-        got = _probe_chunk(chunk, settle, timeout)
+        got, chunk_failures = _probe_chunk(chunk, settle, timeout)
+        failures.update(chunk_failures)
 
         # Restore failed on the plugin side (Fable 5 review L-03): the photo stayed
         # in a NEUTRAL state in Lightroom — strong signal, must be shown, never silent.
+        # Deliberately does NOT block caching the anchor (current behavior).
         restore_failed = [t.photo_id[:8] for (t, _d) in got.values() if t.restore_error]
         if restore_failed:
             msg = (
@@ -205,7 +287,9 @@ def ensure_neutral_previews(
                 f"delay ({_RETRY_SETTLE:g}s)…"
             )
             retry_timeout = max(_MIN_TIMEOUT, (_SECONDS_PER_PHOTO + _RETRY_SETTLE) * len(suspects))
-            got.update(_probe_chunk(suspects, _RETRY_SETTLE, retry_timeout))
+            retry_got, retry_failures = _probe_chunk(suspects, _RETRY_SETTLE, retry_timeout)
+            got.update(retry_got)
+            failures.update(retry_failures)
             still = [
                 p.photo_id[:8] for p in suspects
                 if p.photo_id in got and _anchor_suspect(p, got[p.photo_id][1], conn)
@@ -218,6 +302,7 @@ def ensure_neutral_previews(
                     "this persists."
                 )
 
+        chunk_written: list[str] = []
         for p in chunk:
             hit = got.get(p.photo_id)
             if hit is None:
@@ -235,19 +320,40 @@ def ensure_neutral_previews(
                     )
                 except Exception:
                     _log.exception("put_neutral_preview failed (%s)", p.photo_id)
+                    failures[p.photo_id] = "cache write failed"
+                    continue
             out[p.photo_id] = {
                 "sharp": dual.sharp, "glob": dual.glob,
                 "asshot_temp": t.asshot_temp, "asshot_tint": t.asshot_tint,
                 "mask_sharp_frac": dual.mask_sharp_frac,
             }
             n_refreshed += 1
-        if conn is not None:
+            chunk_written.append(p.photo_id)
+        if conn is not None and chunk_written:
             try:
                 conn.commit()  # P-07: one commit per batch, not per photo
             except Exception:
                 _log.exception("neutral batch commit failed")
+                # The batch was never durably written — every photo just
+                # counted as refreshed in this chunk is actually lost.
+                for pid in chunk_written:
+                    out.pop(pid, None)
+                    failures[pid] = "cache commit failed"
+                n_refreshed -= len(chunk_written)
+
+        chunk_ok = sum(1 for p in chunk if p.photo_id in out)
+        consecutive_zero_success = 0 if chunk_ok else consecutive_zero_success + 1
         tick(min(start + len(chunk), len(todo)), len(todo))
-    return out, n_refreshed
+        if consecutive_zero_success >= _CIRCUIT_BREAKER_CHUNKS:
+            done = min(start + len(chunk), len(todo))
+            raise RuntimeError(
+                f"Circuit breaker: {consecutive_zero_success} consecutive chunks "
+                f"produced zero successes — aborting with {len(todo) - done} photo(s) "
+                f"not attempted. Reasons: {_top_reasons(failures, 3)}"
+            )
+    return NeutralPreviewOutcome(
+        by_id=out, n_refreshed=n_refreshed, n_requested=n_requested, failures=failures,
+    )
 
 
 class NeutralPreviewWorker(QThread):
@@ -278,21 +384,15 @@ class NeutralPreviewWorker(QThread):
             catalog_path = next((p.catalog_path for p in photos if p.catalog_path), None)
             conn = cachemod.open_cache(catalog_path) if catalog_path else None
 
-            by_id, n_refreshed = ensure_neutral_previews(
+            outcome = ensure_neutral_previews(
                 photos, conn, progress=self.progress.emit,
                 progress_count=self.progress_count.emit,
             )
-            n_missing = len(photos) - len(by_id)
-            if n_refreshed == 0 and n_missing == 0:
-                self.finished_result.emit(
-                    f"Neutral renders already up to date ({len(photos)} photo(s), cache)."
-                )
+            failed, msg = _summarize(outcome, len(photos))
+            if failed:
+                self.failed.emit(msg)
             else:
-                self.finished_result.emit(
-                    f"Neutral renders calibrated: {n_refreshed} recomputed, "
-                    f"{len(by_id)}/{len(photos)} available"
-                    + (f" ({n_missing} without a thumbnail)." if n_missing else ".")
-                )
+                self.finished_result.emit(msg)
         except Exception as exc:  # safety net
             self.failed.emit(str(exc))
         finally:

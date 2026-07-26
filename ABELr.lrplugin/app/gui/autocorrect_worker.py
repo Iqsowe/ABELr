@@ -158,10 +158,12 @@ class AutoCorrectWorker(QThread):
                 if mode_embedded:
                     # Neutral anchor (hash_style cache, render_probe jobs for
                     # misses) — NO measurement of the current render.
-                    neutral_by_id, n_refreshed = ensure_neutral_previews(
+                    neutral_outcome = ensure_neutral_previews(
                         photos, conn, progress=self.progress.emit,
                         progress_count=self.progress_count.emit,
                     )
+                    neutral_by_id = neutral_outcome.by_id
+                    n_refreshed = neutral_outcome.n_refreshed
                     if n_refreshed:
                         notes.append(f"{n_refreshed} neutral anchor(s) recalibrated via Lightroom.")
                     for p in photos:

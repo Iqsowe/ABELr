@@ -1,0 +1,182 @@
+"""PLAN.md N1c — `ensure_neutral_previews` end-to-end via `FakePlugin`, no HTTP,
+no Qt, no GPU/RAW (gpu_jpeg.decode_file / analyze_rendered_gpu_dual stubbed).
+
+R1 (undersized-render rejection) and R3 haven't landed yet (PLAN.md order:
+N before G before R) — no case for it here; it belongs with R1's own test
+extension once the grid-enforcement helper exists.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.core import cache as cachemod
+from app.core.pipeline import RenderAnalysisDual
+from app.gui import neutral_preview_worker as npw
+from app.server.job_queue import JobQueue
+from app.server.models import PhotoResult
+from app.tools.mock_plugin import (
+    FakePlugin,
+    render_probe_all_timeout,
+    render_probe_error_status,
+    render_probe_no_response,
+    render_probe_ok,
+    render_probe_partial,
+    render_probe_restore_failed,
+)
+
+from .conftest import make_analysis
+
+
+@pytest.fixture
+def conn(tmp_path):
+    c = cachemod.open_cache(tmp_path / "Catalog.lrcat")
+    yield c
+    c.close()
+
+
+@pytest.fixture
+def queue(monkeypatch):
+    q = JobQueue()
+    monkeypatch.setattr(npw, "job_queue", q)
+    return q
+
+
+@pytest.fixture
+def plugin(queue):
+    return FakePlugin(queue=queue)
+
+
+@pytest.fixture(autouse=True)
+def _stub_gpu_and_fast_timeouts(monkeypatch):
+    dual = RenderAnalysisDual(sharp=make_analysis(), glob=make_analysis(), mask_sharp_frac=0.5)
+    monkeypatch.setattr(npw.gpu_jpeg, "decode_file", lambda path: object())
+    monkeypatch.setattr(npw.render_metrics_gpu, "analyze_rendered_gpu_dual", lambda chw: dual)
+    # Real constants (30s floor, 4s/photo) would make a no-response test take
+    # 30s+ for real — this is control-flow testing, not timing testing.
+    monkeypatch.setattr(npw, "_MIN_TIMEOUT", 0.5)
+    monkeypatch.setattr(npw, "_SECONDS_PER_PHOTO", 0.05)
+    monkeypatch.setattr(npw, "DEFAULT_SETTLE", 0.0)
+    monkeypatch.setattr(npw, "_RETRY_SETTLE", 0.0)
+
+
+def _photos(n: int) -> list[PhotoResult]:
+    return [
+        PhotoResult(photo_id=f"uuid-{i:03d}", path=f"P{i}.ARW", current_develop={"Exposure2012": 0.0})
+        for i in range(n)
+    ]
+
+
+def test_happy_path_all_probes_succeed(conn, plugin):
+    plugin.render_probe_hook = render_probe_ok()
+    photos = _photos(20)
+    with plugin.run_in_thread():
+        outcome = npw.ensure_neutral_previews(photos, conn, chunk_size=8)
+
+    assert outcome.n_refreshed == 20
+    assert outcome.n_requested == 20
+    assert len(outcome.by_id) == 20
+    assert outcome.failures == {}
+    failed, msg = npw._summarize(outcome, len(photos))
+    assert failed is False
+    assert "20 recomputed" in msg
+
+
+def test_all_timeout_is_reported_as_failed_not_fake_success(conn, plugin):
+    """Pins the N2c fix: this used to emit a "calibrated: 0 recomputed" SUCCESS
+    message even though nothing whatsoever was refreshed."""
+    plugin.render_probe_hook = render_probe_all_timeout()
+    photos = _photos(5)
+    with plugin.run_in_thread():
+        outcome = npw.ensure_neutral_previews(photos, conn, chunk_size=8)
+
+    assert outcome.n_refreshed == 0
+    assert len(outcome.failures) == 5
+    failed, msg = npw._summarize(outcome, len(photos))
+    assert failed is True
+    assert "failed" in msg.lower()
+
+
+def test_partial_chunk_failure_still_caches_the_good_ones(conn, plugin):
+    plugin.render_probe_hook = render_probe_partial(n_fail=3)
+    photos = _photos(8)
+    with plugin.run_in_thread():
+        outcome = npw.ensure_neutral_previews(photos, conn, chunk_size=8)
+
+    assert outcome.n_refreshed == 5
+    assert len(outcome.by_id) == 5
+    assert len(outcome.failures) == 3
+    for pid in [p.photo_id for p in photos[:3]]:
+        assert pid in outcome.failures
+    failed, msg = npw._summarize(outcome, len(photos))
+    assert failed is False
+    assert "5 recomputed" in msg
+    assert "failed" in msg  # names the cause, doesn't just say "without a thumbnail"
+
+
+def test_status_error_with_thumbnails_present_is_all_failure(conn, plugin):
+    """N2a/N2c: a job-level status='error' means the whole chunk failed, even
+    though the plugin still attached thumbnail rows to the JobResult."""
+    plugin.render_probe_hook = render_probe_error_status()
+    photos = _photos(4)
+    with plugin.run_in_thread():
+        outcome = npw.ensure_neutral_previews(photos, conn, chunk_size=8)
+
+    assert outcome.n_refreshed == 0
+    assert len(outcome.failures) == 4
+    failed, _msg = npw._summarize(outcome, len(photos))
+    assert failed is True
+
+
+def test_plugin_never_responds_raises_runtime_error(conn, plugin):
+    plugin.render_probe_hook = render_probe_no_response()
+    photos = _photos(3)
+    with pytest.raises(RuntimeError, match="Timeout"):
+        with plugin.run_in_thread():
+            npw.ensure_neutral_previews(photos, conn, chunk_size=8)
+
+
+def test_put_neutral_preview_failure_is_not_counted_as_refreshed(conn, plugin, monkeypatch):
+    plugin.render_probe_hook = render_probe_ok()
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("simulated cache write failure")
+
+    monkeypatch.setattr(npw.cachemod, "put_neutral_preview", _boom)
+
+    photos = _photos(3)
+    with plugin.run_in_thread():
+        outcome = npw.ensure_neutral_previews(photos, conn, chunk_size=8)
+
+    assert outcome.n_refreshed == 0
+    assert len(outcome.by_id) == 0
+    assert len(outcome.failures) == 3
+    assert all(reason == "cache write failed" for reason in outcome.failures.values())
+
+
+def test_restore_error_emits_warning_but_anchor_is_still_cached(conn, plugin):
+    """Current behavior, asserted deliberately (PLAN.md N1c)."""
+    plugin.render_probe_hook = render_probe_restore_failed(n_restore_fail=2)
+    photos = _photos(4)
+    warnings: list[str] = []
+    with plugin.run_in_thread():
+        outcome = npw.ensure_neutral_previews(
+            photos, conn, chunk_size=8, progress=warnings.append,
+        )
+
+    assert any("restore failed" in w for w in warnings)
+    assert outcome.n_refreshed == 4
+    assert len(outcome.by_id) == 4
+    assert outcome.failures == {}
+
+
+def test_circuit_breaker_aborts_after_two_consecutive_failing_chunks(conn, plugin):
+    plugin.render_probe_hook = render_probe_all_timeout()
+    photos = _photos(24)  # 3 chunks of 8, all failing
+    with pytest.raises(RuntimeError, match="Circuit breaker"):
+        with plugin.run_in_thread():
+            npw.ensure_neutral_previews(photos, conn, chunk_size=8)
+
+    # Only the first 2 chunks (16 photos) were ever submitted as jobs — the
+    # 3rd chunk's photos never got a render_probe job at all.
+    assert len(plugin.queue._jobs) == 0  # no orphaned pending job from a 3rd submit

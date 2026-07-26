@@ -52,6 +52,10 @@ def _run_server() -> None:
 
 
 def main() -> int:
+    from app.logging_setup import configure as configure_logging
+
+    configure_logging()
+
     # HTTP server in a daemon thread (stops with the GUI).
     server_thread = threading.Thread(target=_run_server, daemon=True, name="fastapi")
     server_thread.start()

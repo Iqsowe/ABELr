@@ -18,6 +18,7 @@ essais/*
 
 tmp_thumbs/*
 ABELr.lrplugin/tmp_thumbs/*
+ABELr.lrplugin/abelr_app.log*
 
 # Plugin auto-suffisant : binaire externe optionnel (exiftool.exe), non versionné —
 # chacun le fournit localement si besoin (cf. bootstrap.ps1 / launch.ps1).
