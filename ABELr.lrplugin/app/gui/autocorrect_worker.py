@@ -258,7 +258,6 @@ class AutoCorrectWorker(QThread):
                 axes=self._axes,
                 forced_embedded=self._forced_embedded,
                 model=model,
-                camera=camera,
                 seed_pool=seed_pool,
             )
             self.finished_result.emit(

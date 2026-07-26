@@ -293,7 +293,8 @@ def band_stats(
 
 
 # --------------------------------------------------------------------------- #
-# Composition (GPU equivalent of pipeline.analyze_rendered)
+# Composition — the live measurement path (PLAN.md D1 removed the CPU-only
+# pipeline.analyze_rendered/analyze_rendered_dual this used to mirror)
 # --------------------------------------------------------------------------- #
 def analyze_rendered_gpu(chw_u8: torch.Tensor) -> RenderAnalysis:
     """Analyze a render decoded on GPU (uint8 CHW) in a single CUDA Lab pass.
@@ -315,7 +316,7 @@ def analyze_rendered_gpu(chw_u8: torch.Tensor) -> RenderAnalysis:
 
 
 def analyze_rendered_gpu_dual(chw_u8: torch.Tensor) -> RenderAnalysisDual:
-    """GPU equivalent of `pipeline.analyze_rendered_dual`: global + sharp zone.
+    """`analyze_rendered_gpu`, but global + sharp zone in one pass.
 
     A single CUDA Lab conversion + a single sharpness map, shared between the
     two scales (global = `mask=None`, sharp = sharp mask).

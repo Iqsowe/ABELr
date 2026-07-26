@@ -539,7 +539,7 @@ parametrized case, no test breaks. Real risks are a surviving importer and
 `check_docs.check_dead_paths` (fails on a doc reference to a non-existent path). Run
 `pytest app/tests -q` **and** `python -m app.tools.check_docs` after each step.
 
-- [ ] **D1 — Function-level removals in live modules** (no import-graph change, zero risk):
+- [x] **D1 — Function-level removals in live modules** (no import-graph change, zero risk):
   `pipeline.analyze_rendered`/`analyze_rendered_dual`/`band_map`;
   `gpu_schedule.process_raw_batch`/`process_embedded_batch`;
   `gpu_jpeg.decode_files`/`analyze_blob`/`analyze_file`; `gpu.streams`; `raw.load_rgb`;

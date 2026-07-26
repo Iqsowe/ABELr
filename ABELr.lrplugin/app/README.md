@@ -74,7 +74,7 @@ Config lives in `ABELr.lrplugin/pytest.ini` (`testpaths`, the `gpu` marker, `fil
 | File | Role |
 |---|---|
 | `color.py` | Analysis color spaces: linear ProPhoto, Y (XYZ) luminance, conversion → sRGB for display |
-| `raw.py` | Sony ARW RAW decoding via rawpy: `load_linear` (linear ProPhoto, analysis) / `load_rgb` (sRGB uint8, GUI) |
+| `raw.py` | Sony ARW RAW decoding via rawpy: `load_linear` (linear ProPhoto, analysis) |
 | `image_source.py` | Analysis pixel source: **RAW → linear ProPhoto** (`LoadedImage`) |
 | `analysis.py` | Exposure metrics (Y luminance) + white balance (gray-world), in linear space |
 | `catalog.py` | Locates the `.lrcat` + `.lrdata` bundles; opens the SQLite files read-only (coexists with Lr open) |

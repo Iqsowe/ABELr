@@ -59,17 +59,6 @@ def load_linear(
     return rgb16.astype(np.float32) / 65535.0
 
 
-def load_rgb(path: str | Path, half_size: bool = True) -> np.ndarray:
-    """Decodes a RAW (.ARW) into display-referred **uint8 sRGB** RGB (GUI display).
-
-    Default sRGB gamma. For analysis, prefer `load_linear`.
-    Returns an HxWx3 uint8 array.
-    """
-    with rawpy.imread(str(path)) as raw:
-        rgb = raw.postprocess(half_size=half_size, output_bps=8, **_COMMON)
-    return rgb
-
-
 def read_asshot_wb(path: str | Path) -> tuple[float, float]:
     """Reads the camera's "as shot" white balance (RGGB multipliers).
 

@@ -33,18 +33,6 @@ _TAG = "-Sony:CreativeStyle"
 _missing_warned = False
 
 
-def exiftool_available() -> bool:
-    """True if the `exiftool` binary responds on the PATH. Usable at startup
-    (GUI) to flag the degradation before launching a batch."""
-    try:
-        subprocess.run(
-            ["exiftool", "-ver"], capture_output=True, timeout=10, check=False
-        )
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
 def _warn_exiftool_missing() -> None:
     """Warns ONCE that the creative profile will be missing (otherwise silent degradation)."""
     global _missing_warned
@@ -56,16 +44,6 @@ def _warn_exiftool_missing() -> None:
         "unavailable: embedded matching ignores the profile (degraded quality). "
         "Install exiftool (https://exiftool.org) and add it to PATH."
     )
-
-
-def read_capture_profile(path: str | Path) -> str | None:
-    """Camera creative profile of an ARW (e.g. "Standard"/"SH"/"VV2"), or None.
-
-    None if exiftool is missing, the file is unreadable, or the tag is absent. Robust:
-    never raises (the profile is an optional enrichment of the matching).
-    """
-    result = read_capture_profiles([str(path)])
-    return result.get(str(path))
 
 
 def read_capture_profiles(paths: list[str]) -> dict[str, str | None]:

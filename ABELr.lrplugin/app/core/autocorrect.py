@@ -281,7 +281,6 @@ def plan(
     axes: frozenset[str] = DEFAULT_AXES,
     forced_embedded: bool = False,
     model: ResponseModel | None = None,
-    camera: str | None = None,
     seed_pool: list[SeedVector] | None = None,
 ) -> tuple[list[PhotoAdjustment], PlanDiagnostics]:
     """Plans the per-photo correction. See the module docstring for the modes."""

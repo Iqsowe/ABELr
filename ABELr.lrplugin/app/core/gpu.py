@@ -1,4 +1,4 @@
-"""GPU/CPU context — device selection, VRAM budget, stream pool.
+"""GPU/CPU context — device selection, VRAM budget.
 
 Project policy (updated — user decision): **GPU-first, CPU fallback if no usable
 CUDA GPU is present**. Historically this module enforced GPU-strict behavior
@@ -13,8 +13,6 @@ module centralizes the decision:
   require CUDA (calibration/GPU-parity tools) — it is no longer the default path.
 - `vram_budget_bytes()` exposes the VRAM available to the wave scheduler
   (`gpu_schedule`) on GPU, or a conservative fixed RAM cap on CPU.
-- `streams()` provides a pool of `torch.cuda.Stream` (GPU only) to overlap
-  H2D upload with compute ("GPU multithreading").
 
 The only CPU work that stays **irreducible** even with a GPU present (see
 `gpu_raw`) is unpacking/decompressing the ARW container via LibRaw: no GPU codec
@@ -22,8 +20,6 @@ exists for Sony ARW.
 """
 
 from __future__ import annotations
-
-import threading
 
 import torch
 
@@ -122,22 +118,6 @@ def empty_cache() -> None:
     """Releases VRAM cached by the torch allocator at the end of a wave."""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-
-
-# --------------------------------------------------------------------------- #
-# CUDA stream pool (overlap upload/compute)
-# --------------------------------------------------------------------------- #
-_streams_lock = threading.Lock()
-_streams: list[torch.cuda.Stream] = []
-
-
-def streams(n: int = 2) -> list[torch.cuda.Stream]:
-    """Shared pool of `n` CUDA streams (lazily created, reused)."""
-    require_cuda()
-    with _streams_lock:
-        while len(_streams) < n:
-            _streams.append(torch.cuda.Stream())
-        return _streams[:n]
 
 
 def synchronize() -> None:

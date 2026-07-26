@@ -219,25 +219,6 @@ def process_combined_batch(
 
 
 # --------------------------------------------------------------------------- #
-# Legacy API — wrappers around the combined pass
-# --------------------------------------------------------------------------- #
-def process_raw_batch(
-    paths: list[str], progress: Progress = None
-) -> dict[str, Optional[RawGpuResult]]:
-    """Decodes a batch of RAW on GPU. {path: RawGpuResult|None}."""
-    raw_out, _ = process_combined_batch(paths, [], progress=progress)
-    return raw_out
-
-
-def process_embedded_batch(
-    paths: list[str], progress: Progress = None
-) -> dict[str, RawReference]:
-    """As-shot WB + tone/bands of the camera JPEG, **GPU** decode. {path: RawReference}."""
-    _, emb_out = process_combined_batch([], paths, progress=progress)
-    return emb_out
-
-
-# --------------------------------------------------------------------------- #
 # Rendered preview (preview/thumbnail): decode + GPU analysis by wave
 # --------------------------------------------------------------------------- #
 def analyze_render_blobs(

@@ -1,4 +1,4 @@
-"""JPEG decoding (GPU nvJPEG if available, otherwise CPU libjpeg via torchvision) + render analysis.
+"""JPEG decoding — GPU nvJPEG if available, otherwise CPU libjpeg via torchvision.
 
 Replaces `cv2.imdecode` (pure CPU) everywhere a JPEG is read for analysis: Lr rendered
 preview (`Previews.lrdata` / plugin thumbnail) and embedded in-camera JPEG. The device
@@ -22,8 +22,6 @@ import torch
 from torchvision.io import ImageReadMode, decode_jpeg
 
 from . import gpu
-from .pipeline import RenderAnalysis
-from .render_metrics_gpu import analyze_rendered_gpu
 
 _JPEG_SOI = b"\xff\xd8\xff"
 
@@ -86,34 +84,3 @@ def decode_file(path: str | Path) -> Optional[torch.Tensor]:
         return None
     res = decode_blobs([stream])
     return res[0] if res else None
-
-
-def decode_files(paths: list[str | Path]) -> list[Optional[torch.Tensor]]:
-    """Reads then decodes (GPU, batched) a list of JPEG/`.lrfprev` files."""
-    blobs: list[bytes] = []
-    positions: list[int] = []
-    out: list[Optional[torch.Tensor]] = [None] * len(paths)
-    for i, path in enumerate(paths):
-        try:
-            stream = extract_jpeg_stream(Path(path).read_bytes())
-        except OSError:
-            stream = None
-        if stream is not None:
-            blobs.append(stream)
-            positions.append(i)
-    for pos, tensor in zip(positions, decode_blobs(blobs)):
-        out[pos] = tensor
-    return out
-
-
-def analyze_blob(blob: bytes) -> Optional[RenderAnalysis]:
-    """Decodes (GPU) a JPEG buffer and returns the render analysis, or None if unreadable."""
-    res = decode_blobs([blob])
-    chw = res[0] if res else None
-    return analyze_rendered_gpu(chw) if chw is not None else None
-
-
-def analyze_file(path: str | Path) -> Optional[RenderAnalysis]:
-    """Decodes (GPU) a rendered file and returns the analysis, or None if unreadable."""
-    chw = decode_file(path)
-    return analyze_rendered_gpu(chw) if chw is not None else None
