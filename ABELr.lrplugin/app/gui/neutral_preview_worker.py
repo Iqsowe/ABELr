@@ -33,6 +33,7 @@ for an absolute WB correction. This read effectively verifies the assumption
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Callable
 
@@ -192,6 +193,7 @@ class NeutralPreviewOutcome:
     n_refreshed: int
     n_requested: int
     failures: dict[str, str]
+    cancelled: bool = False
 
 
 def _summarize(outcome: NeutralPreviewOutcome, n_photos: int) -> tuple[bool, str]:
@@ -203,6 +205,13 @@ def _summarize(outcome: NeutralPreviewOutcome, n_photos: int) -> tuple[bool, str
     (fake success, N2c's reason for existing).
     """
     n_missing = n_photos - len(outcome.by_id)
+    if outcome.cancelled:
+        # Not a failure (PLAN.md U3) — the user asked to stop; whatever
+        # refreshed before the cancel point is still cached and usable.
+        return False, (
+            f"Neutral render cancelled — {outcome.n_refreshed} recomputed, "
+            f"{len(outcome.by_id)}/{n_photos} available before stopping."
+        )
     if outcome.n_refreshed == 0 and outcome.n_requested > 0:
         return True, (
             f"Neutral render failed for all {outcome.n_requested} requested "
@@ -229,6 +238,7 @@ def ensure_neutral_previews(
     progress_count: Callable[[int, int], None] | None = None,
     chunk_size: int = _CHUNK_SIZE,
     settle: float = DEFAULT_SETTLE,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> NeutralPreviewOutcome:
     """Ensures an up-to-date neutral render (`NeutralPreviewJPEG` cache) for each photo.
 
@@ -239,6 +249,11 @@ def ensure_neutral_previews(
     thumbnail are absent from the dict; `outcome.n_refreshed` = number of
     anchors recomputed via the plugin; `outcome.failures[uuid]` = reason for
     every requested photo that did NOT end up in `by_id`.
+
+    `should_cancel` (PLAN.md U3): checked between chunks — a chunk already
+    submitted always finishes (never abandons a photo mid render/restore),
+    remaining chunks are skipped and `outcome.cancelled=True`. Never raises;
+    a user-requested stop is not a failure.
 
     Raises RuntimeError if the plugin doesn't respond, if an anchor stays
     suspect (stale probe) after retry, or if the circuit breaker trips
@@ -263,8 +278,12 @@ def ensure_neutral_previews(
     n_requested = len(todo)
     failures: dict[str, str] = {}
     consecutive_zero_success = 0
+    cancelled = False
     step = max(1, chunk_size)
     for start in range(0, len(todo), step):
+        if should_cancel is not None and should_cancel():
+            cancelled = True
+            break
         chunk = todo[start:start + step]
         say(
             f"Neutral render {min(start + len(chunk), len(todo))}/{len(todo)} "
@@ -371,6 +390,7 @@ def ensure_neutral_previews(
             )
     return NeutralPreviewOutcome(
         by_id=out, n_refreshed=n_refreshed, n_requested=n_requested, failures=failures,
+        cancelled=cancelled,
     )
 
 
@@ -385,6 +405,12 @@ class NeutralPreviewWorker(QThread):
     def __init__(self, photos: list[PhotoResult]) -> None:
         super().__init__()
         self._photos = photos
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        """PLAN.md U3 — cooperative: checked between chunks in
+        ensure_neutral_previews, never kills the thread mid-chunk."""
+        self._cancel_event.set()
 
     def run(self) -> None:
         conn = None
@@ -405,6 +431,7 @@ class NeutralPreviewWorker(QThread):
             outcome = ensure_neutral_previews(
                 photos, conn, progress=self.progress.emit,
                 progress_count=self.progress_count.emit,
+                should_cancel=self._cancel_event.is_set,
             )
             failed, msg = _summarize(outcome, len(photos))
             if failed:

@@ -92,6 +92,33 @@ def test_happy_path_all_probes_succeed(conn, plugin):
     assert "20 recomputed" in msg
 
 
+def test_cancel_stops_before_remaining_chunks_are_submitted(conn, plugin):
+    """PLAN.md U3 — should_cancel is checked BETWEEN chunks (never mid-chunk):
+    a chunk already submitted always finishes; a cancel requested before the
+    2nd chunk means the 2nd chunk is never submitted at all."""
+    plugin.render_probe_hook = render_probe_ok()
+    photos = _photos(24)  # 3 chunks of 8
+
+    calls = {"n": 0}
+
+    def cancel_after_first_chunk():
+        calls["n"] += 1
+        return calls["n"] > 1  # False on the 1st check, True from then on
+
+    with plugin.run_in_thread():
+        outcome = npw.ensure_neutral_previews(
+            photos, conn, chunk_size=8, should_cancel=cancel_after_first_chunk,
+        )
+
+    assert outcome.cancelled is True
+    assert outcome.n_refreshed == 8  # only the 1st chunk ran
+    assert len(outcome.by_id) == 8
+    failed, msg = npw._summarize(outcome, len(photos))
+    assert failed is False  # a user-requested stop is not a failure
+    assert "cancelled" in msg.lower()
+    assert "8" in msg
+
+
 def test_undersized_render_rejected(conn, plugin, monkeypatch):
     """PLAN.md R1 — a render below MEASURE_LONG_EDGE is a failure, never a
     silently-accepted measurement: requestJpegThumbnail ignores the requested

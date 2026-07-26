@@ -504,7 +504,7 @@ rather than working around it.
   `core/` or `gui/status.py`, **testable without Qt** — it carries the risk, not the rendering.
   Test: `app/tests/test_gui_status.py` on an in-memory cache.
 
-- [ ] **U3 — ETA and cancel.** Before launching a probe-based operation, show the estimate from
+- [x] **U3 — ETA and cancel.** Before launching a probe-based operation, show the estimate from
   `budget.probe_seconds_per_photo` (`N3a`): "42 photos × ~5.7 s ≈ 4 min". Above a threshold
   (e.g. 5 min), ask for confirmation. Add a **Cancel** button: workers check a cooperative flag
   between chunks (natural granularity, no thread kill needed) — the infrastructure already

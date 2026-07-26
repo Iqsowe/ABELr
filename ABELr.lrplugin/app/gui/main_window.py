@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QMainWindow,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QTabWidget,
@@ -49,6 +50,11 @@ from PySide6.QtWidgets import (
 
 from ..core import cache as cachemod
 from ..core import render_metrics, response
+from ..server import budget as budgetmod
+
+# U3: above this estimated wall-clock, confirm before launching a probe-heavy
+# neutral-anchor run rather than silently committing the user to it.
+_ETA_CONFIRM_THRESHOLD_S = 300.0
 from ..server.job_queue import job_queue
 from ..server.models import JobResult, JobType
 from . import status as statusmod
@@ -121,6 +127,11 @@ class MainWindow(QMainWindow):
             "Exposure 0, HSL 0) for the current selection so the next Preview/"
             "Apply doesn't pay for it inline."
         )
+        # U3: cooperative cancel for the probe-heavy neutral-anchor run —
+        # enabled only while that specific worker is active.
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setToolTip("Stops after the chunk currently in flight finishes.")
 
         # Axes + reference.
         self.cb_expo = QCheckBox("Exposure")
@@ -174,6 +185,7 @@ class MainWindow(QMainWindow):
         self.mark_refs_btn.clicked.connect(lambda: self._begin("ref"))
         self.unmark_refs_btn.clicked.connect(lambda: self._begin("seed_remove"))
         self.calibrate_neutral_btn.clicked.connect(lambda: self._begin("neutral"))
+        self.cancel_btn.clicked.connect(self._on_cancel_click)
         self.preview_btn.clicked.connect(lambda: self._begin("preview"))
         self.apply_btn.clicked.connect(self._on_apply_click)
         self.cb_embedded.toggled.connect(self._refresh_neutral_btn_enabled)
@@ -212,6 +224,7 @@ class MainWindow(QMainWindow):
         g3.addLayout(axes_row)
         actions_row = QHBoxLayout()
         actions_row.addWidget(self.calibrate_neutral_btn)
+        actions_row.addWidget(self.cancel_btn)
         actions_row.addSpacing(16)
         actions_row.addWidget(self.preview_btn)
         actions_row.addWidget(self.apply_btn)
@@ -445,6 +458,23 @@ class MainWindow(QMainWindow):
 
         if op == "neutral":
             n = len(result.photos)
+            # U3: ETA from the same budget the worker itself uses, confirm
+            # before committing the user to a long probe-heavy run.
+            eta_s = budgetmod.probe_seconds_per_photo(
+                render_metrics.MEASURE_LONG_EDGE, render_metrics.MEASURE_LONG_EDGE,
+            ) * n
+            if eta_s > _ETA_CONFIRM_THRESHOLD_S:
+                mins = eta_s / 60.0
+                proceed = QMessageBox.question(
+                    self, "Prepare neutral anchors",
+                    f"{n} photo(s) × ~{budgetmod.PROBE_S_PER_MPX * render_metrics.MEASURE_LONG_EDGE**2 / 1e6:.1f}s "
+                    f"≈ {mins:.0f} min. Continue?",
+                ) == QMessageBox.StandardButton.Yes
+                if not proceed:
+                    self._set_actions_enabled(True)
+                    self._progress_done()
+                    self.status_label.setText("Neutral-anchor run cancelled before starting.")
+                    return
             self.status_label.setText(
                 f"{n} photo(s) — neutral calibration render (write + Lr render, heavy)…"
             )
@@ -453,6 +483,7 @@ class MainWindow(QMainWindow):
             self._neutral_worker.progress_count.connect(self._on_progress_count)
             self._neutral_worker.finished_result.connect(self._on_neutral_done)
             self._neutral_worker.failed.connect(self._on_auto_failed)
+            self.cancel_btn.setEnabled(True)
             self._neutral_worker.start()
             return
 
@@ -599,6 +630,7 @@ class MainWindow(QMainWindow):
 
     def _on_neutral_done(self, message: str) -> None:
         self._set_actions_enabled(True)
+        self.cancel_btn.setEnabled(False)
         self._progress_done()
         self.status_label.setText(message)
         self._refresh_status()
@@ -767,8 +799,15 @@ class MainWindow(QMainWindow):
 
     def _on_auto_failed(self, message: str) -> None:
         self._set_actions_enabled(True)
+        self.cancel_btn.setEnabled(False)
         self._progress_done()
         self.status_label.setText(f"Error: {message}")
+
+    def _on_cancel_click(self) -> None:
+        if self._neutral_worker is not None and self._neutral_worker.isRunning():
+            self._neutral_worker.cancel()
+            self.cancel_btn.setEnabled(False)
+            self.status_label.setText("Cancelling — finishing the chunk in flight…")
 
     def closeEvent(self, event) -> None:
         """Stops every tracked QThread worker before the window closes.
