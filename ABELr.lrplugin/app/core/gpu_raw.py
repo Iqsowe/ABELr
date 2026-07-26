@@ -226,33 +226,27 @@ def process_bayer_gpu(rb: RawBayer) -> RawGpuResult:
     grayworld_rg, grayworld_bg = _grayworld(pp)
 
     # Sharp-zone tone/bands — sRGB derived from ProPhoto, comparable to JPEGs
-    # (camera/preview). `exposure_sharp`/`grayworld_*_sharp` below keep their
-    # own full-res mask (RAW-domain diagnostic, write-only in the cache, never
-    # compared cross-source — PLAN.md R2's scale-mismatch fix targets the sRGB
-    # tone/band measurement, which IS compared against the embedded JPEG and
-    # the Lr render).
+    # (camera/preview). Measured directly on the common measurement grid
+    # (PLAN.md G1b) — no full-resolution Lab/sharp-mask pass: at 33 Mpx those
+    # two ops alone cost ~146ms (44% of process_bayer_gpu), and fed only
+    # exposure_sharp/grayworld_*_sharp, which were write-only in the cache
+    # (no non-test code read them) — dropped here rather than kept unused.
+    # Provably value-preserving for tone/bands vs. the old shortcut: when the
+    # old "hwc_measure is hwc_u8" shortcut fired (no downsampling needed),
+    # hwc_measure already equaled hwc_u8, so computing lab/sharp directly on
+    # hwc_measure unconditionally gives the same result (see G1a's parity test).
     pp_hw3 = pp.reshape(H, W, 3)
     hwc_u8 = _prophoto_linear_to_srgb_u8_gpu(pp_hw3)
-    lab = render_metrics_gpu._srgb_u8_to_lab(hwc_u8)
-    sharp = sharpness.sharp_mask_gpu(lab[..., 0])                       # HxW bool, full res
-
-    # Common measurement grid (PLAN.md R2): re-derive Lab/sharp-mask on the
-    # downsampled grid only when downsampling actually occurs (identity
-    # otherwise) — avoids a second Lab conversion on an already-small source.
     hwc_measure = render_metrics_gpu.downsample_to_measure_grid(hwc_u8)
-    if hwc_measure is hwc_u8:
-        lab_measure, sharp_measure = lab, sharp
-    else:
-        lab_measure = render_metrics_gpu._srgb_u8_to_lab(hwc_measure)
-        sharp_measure = sharpness.sharp_mask_gpu(lab_measure[..., 0])
+    lab_measure = render_metrics_gpu._srgb_u8_to_lab(hwc_measure)
+    sharp_measure = sharpness.sharp_mask_gpu(lab_measure[..., 0])
     tone = render_metrics_gpu.tone_stats(hwc_measure, lab_measure, mask=sharp_measure)
     bands = render_metrics_gpu.band_stats(hwc_measure, lab_measure, mask=sharp_measure)
 
-    # Sharp zone (same Y/gray-world reductions, restricted to the full-res mask).
-    mask_flat = sharp.reshape(-1)
-    exposure_sharp = _exposure(pp[mask_flat], luma[mask_flat])
-    grayworld_rg_sharp, grayworld_bg_sharp = _grayworld(pp[mask_flat])
-    mask_sharp_frac = float(sharp.float().mean())
+    exposure_sharp = None
+    grayworld_rg_sharp = None
+    grayworld_bg_sharp = None
+    mask_sharp_frac = float(sharp_measure.float().mean())
 
     g = rb.wb[1] or 1.0
     return RawGpuResult(

@@ -314,7 +314,7 @@ bug happened. The App computes the budget; Lua derives its wait from it.
 
 ### G1 — Remove the full-resolution Lab + sharp-mask from `process_bayer_gpu`
 
-- [ ] **G1a — Land the parity test FIRST** (rule 2). `app/tests/test_gpu_raw_measure_parity.py`:
+- [x] **G1a — Land the parity test FIRST** (rule 2). `app/tests/test_gpu_raw_measure_parity.py`:
   build a deterministic synthetic `RawBayer` (seeded RNG) at two sizes — above the 2048 grid
   (2400×1600) and below it (1200×800) — and assert `process_bayer_gpu(...).tone / .bands /
   .exposure / .grayworld_* / .asshot_*` are **exactly equal** to a legacy re-implementation
@@ -325,7 +325,7 @@ bug happened. The App computes the budget; Lua derives its wait from it.
   Comparing two code paths on the same device is device-agnostic and encodes exactly the claim
   being made. Must be green **before** and **after** the change, legacy function unchanged.
 
-- [ ] **G1b — The change.** In `gpu_raw.py:234-255`: drop the full-res `lab` (`:236`) and `sharp`
+- [x] **G1b — The change.** In `gpu_raw.py:234-255`: drop the full-res `lab` (`:236`) and `sharp`
   (`:237`); compute `hwc_measure`/`lab_measure`/`sharp_measure` **unconditionally**, deleting the
   `if hwc_measure is hwc_u8` shortcut (`:243-247`) — provably value-preserving, since when the
   shortcut fired `hwc_measure` *was* `hwc_u8`, so the same deterministic functions on the same
