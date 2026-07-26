@@ -111,28 +111,27 @@ local function dispatch(job)
         local payload  = job.payload or {}
         local width    = payload.width  or 512
         local height   = payload.height or 512
-        -- Uses the current selection (the same list as get_selected_photos).
-        local catalog  = LrApplication.activeCatalog()
-        local photos   = catalog:getTargetPhotos()
-        local thumbs   = Thumbnails.fetch(photos, width, height)
-        -- Optional filter: if payload.photo_ids is provided, only return those.
-        local filter   = {}
+        local thumbs
         if payload.photo_ids and #payload.photo_ids > 0 then
-            for _, id in ipairs(payload.photo_ids) do filter[id] = true end
+            -- Only the requested photos (see Thumbnails.fetchByIds): a chunked
+            -- caller must not pay for -- or wait on -- the whole selection.
+            thumbs = Thumbnails.fetchByIds(payload.photo_ids, width, height)
+        else
+            -- No filter given: whole current selection (manual/legacy calls).
+            local catalog = LrApplication.activeCatalog()
+            thumbs = Thumbnails.fetch(catalog:getTargetPhotos(), width, height)
         end
         local out, errors, nOk = Json.array({}), {}, 0
         for _, t in ipairs(thumbs) do
-            if not payload.photo_ids or #payload.photo_ids == 0 or filter[t.photo_id] then
-                out[#out + 1] = {
-                    photo_id       = t.photo_id,
-                    thumbnail_path = t.thumbnail_path,
-                    error          = t.error,
-                }
-                if t.thumbnail_path then
-                    nOk = nOk + 1
-                else
-                    errors[#errors + 1] = t.error or ('unknown error: ' .. tostring(t.photo_id))
-                end
+            out[#out + 1] = {
+                photo_id       = t.photo_id,
+                thumbnail_path = t.thumbnail_path,
+                error          = t.error,
+            }
+            if t.thumbnail_path then
+                nOk = nOk + 1
+            else
+                errors[#errors + 1] = t.error or ('unknown error: ' .. tostring(t.photo_id))
             end
         end
         local total  = #out

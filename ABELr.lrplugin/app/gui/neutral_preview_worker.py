@@ -62,7 +62,11 @@ _NEUTRAL_DEVELOP: dict[str, object] = {
 }
 
 # Time budget per photo (apply + settle + render + restore on the plugin side).
-_SECONDS_PER_PHOTO = 4.0
+# Measured worst case ~7.4s/photo at 2048x2048 forced regeneration (PLAN.md N
+# section); must also stay above Thumbnails.lua's PROBE_SECONDS_PER_PHOTO=10
+# (Lua's own internal wait) with margin, or Python gives up before Lua's
+# response can arrive.
+_SECONDS_PER_PHOTO = 12.0
 _MIN_TIMEOUT = 30.0
 # render_probe batch size: the plugin dispatch is synchronous inside pollOnce,
 # a large batch would block the heartbeat for several minutes and widen the
