@@ -58,9 +58,13 @@ SCHEMA_VERSION = 5  # bump: PLAN.md W3 — removed InCameraJPEG's 4 delta_* colu
 # Salted into the freshness hashes (`raw_signature`, `style_hash`):
 # a change in the measurement algorithm (new global/sharp pairs, deltas…)
 # must invalidate all cached content without migration — bump when the computation changes.
-ANALYSIS_VERSION = "v7-measure-grid"  # bump: PLAN.md R2/R3 — common measurement grid
-# (RAW/embedded-JPEG downsampled to render_metrics.MEASURE_LONG_EDGE before
-# sharp_mask/tone_stats/band_stats) + resolution-proportional pre-Laplacian blur.
+ANALYSIS_VERSION = "v8-grid-enforced"  # bump: PLAN.md R2 — sub-grid renders were
+# being silently accepted and measured (requestJpegThumbnail ignores the
+# requested size, serves whichever pyramid tier Lr has cached — 67% of
+# renders on the live catalog measured below the 2048 grid, defeating v7's
+# "common measurement grid" premise). R1's render_metrics_gpu.
+# reject_if_undersized now rejects those instead of silently measuring them —
+# this bump forces a full re-measure on a grid that's finally homogeneous.
 
 # "Style" subset of develop settings = everything that affects the NEUTRAL render
 # (`render_probe` probe: WB As Shot + Exposure2012=0 + **HSL 24 zeroed**, everything

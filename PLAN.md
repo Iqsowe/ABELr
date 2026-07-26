@@ -395,7 +395,7 @@ value crosses to host, not how it's computed).
   is accepted then brought down to 2048, an exactly-2048 render is accepted with no resampling.
   Lr: no.
 
-- [ ] **R2 — Bump `ANALYSIS_VERSION`.** `cache.py:61` → `"v8-grid-enforced"`. Salted into
+- [x] **R2 — Bump `ANALYSIS_VERSION`.** `cache.py:61` → `"v8-grid-enforced"`. Salted into
   `raw_signature` and `style_hash` → every measurement starts fresh, no migration.
   `SCHEMA_VERSION` stays 5 (no structural change, per `G1b`). Update the constant's comment with
   the reason (sub-grid renders were being accepted) and `documentation/ARCHITECTURE.md`.
