@@ -260,6 +260,19 @@ def test_get_neutral_preview_latest_ignores_hash(conn):
     assert cache.get_neutral_preview_latest(conn, "u1") is not None
 
 
+def test_get_neutral_preview_null_sharp_treated_as_miss(conn):
+    """PLAN.md N4c — defensive guard: not reachable through put_neutral_preview
+    (sharp is a required, never-None argument there), inserted directly to
+    simulate a row whose measurement columns never got written."""
+    conn.execute(
+        "INSERT INTO NeutralPreviewJPEG(uuid, hash_style) VALUES (?, ?)",
+        ("u2", "hash-style"),
+    )
+    conn.commit()
+    assert cache.get_neutral_preview(conn, "u2", "hash-style") is None
+    assert cache.get_neutral_preview_latest(conn, "u2") is None
+
+
 # --------------------------------------------------------------------------- #
 # raw_signature
 # --------------------------------------------------------------------------- #

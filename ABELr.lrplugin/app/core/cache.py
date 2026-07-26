@@ -655,7 +655,14 @@ def put_preview_jpeg(
                      sharp, glob, mask_sharp_frac, commit)
 
 
-def _neutral_preview_dict(row: sqlite3.Row) -> dict[str, Any]:
+def _neutral_preview_dict(row: sqlite3.Row) -> dict[str, Any] | None:
+    # Defensive guard (PLAN.md N4c): a row whose "sharp" measurement is NULL
+    # is unusable as a neutral anchor — treat it as a cache miss rather than
+    # handing the caller a dict with sharp=None. Not reachable through the
+    # current write path (put_neutral_preview is only ever called with a
+    # non-None sharp from analyze_rendered_gpu_dual), but hardening is cheap.
+    if _analysis_from_row(row, "sharp") is None:
+        return None
     return {
         "sharp": _analysis_from_row(row, "sharp"),
         "glob": _analysis_from_row(row, "global"),

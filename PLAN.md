@@ -294,7 +294,7 @@ bug happened. The App computes the budget; Lua derives its wait from it.
   `thumbsDir()` at startup. Fold the duplicated `thumbsDir()` (`Thumbnails.lua:30-36` vs
   `Utils.lua:37-39`) into `Utils`. Lr: the sweep needs a live reload to confirm.
 
-- [ ] **N4c — Defensive guard on `_analysis_from_row`.** Hardening, **not** a contributor to the
+- [x] **N4c — Defensive guard on `_analysis_from_row`.** Hardening, **not** a contributor to the
   4-row cache: `put_neutral_preview` is only ever called with a non-`None` `sharp` from
   `analyze_rendered_gpu_dual`, which always builds a `ToneStats` (`render_metrics_gpu.py:272-276`)
   — the `None` return of `cache.py:315-316` is unreachable through the current write path. Still,
