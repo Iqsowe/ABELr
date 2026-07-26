@@ -31,6 +31,36 @@ def test_exposure_slope_never_below_one():
     assert flat.slope_at(10.0) >= 1.0
 
 
+def test_exposure_slope_non_monotonic_segment_picks_containing_interval():
+    # Roll-off: slope drops sharply in the last segment (highlight compression).
+    er = rsp.ExposureResponse(ev=[-1.0, 0.0, 1.0, 2.0], lstar=[33.0, 50.0, 67.0, 72.0])
+    assert er.slope_at(70.0) == pytest.approx(5.0, abs=1e-6)   # [1,2] segment: (72-67)/1
+    assert er.slope_at(60.0) == pytest.approx(17.0, abs=1e-6)  # [0,1] segment
+
+
+def test_exposure_slope_out_of_range_uses_nearest_segment():
+    er = rsp.ExposureResponse(ev=[-1.0, 0.0, 1.0], lstar=[33.0, 50.0, 67.0])
+    # l_value above every probed L* -> nearest segment is the last one, [0,1].
+    assert er.slope_at(120.0) == pytest.approx(17.0, abs=1e-6)
+    # l_value below every probed L* -> nearest segment is the first one, [-1,0].
+    assert er.slope_at(-50.0) == pytest.approx(17.0, abs=1e-6)
+
+
+# --- Clipped-sample rejection (X1) --------------------------------------------- #
+def test_clip_ok_accepts_clean_sample():
+    assert rsp.clip_ok(0.0, 0.0)
+    assert rsp.clip_ok(0.02, 0.01)
+
+
+def test_clip_ok_rejects_over_threshold():
+    assert not rsp.clip_ok(0.06, 0.0)
+    assert not rsp.clip_ok(0.0, 0.10)
+
+
+def test_clip_ok_boundary_is_inclusive():
+    assert rsp.clip_ok(rsp.MAX_CLIP_FRAC, 0.0)
+
+
 # --- White balance ------------------------------------------------------------ #
 def test_wb_uncalibrated_returns_zero():
     wb = rsp.WBResponse()

@@ -35,6 +35,7 @@ import logging
 from PySide6.QtWidgets import QMainWindow, QMessageBox
 
 from ..core import cache as cachemod
+from ..core import catalog as catalogmod
 from ..core import render_metrics, response
 from ..server import budget as budgetmod
 from ..server.job_queue import job_queue
@@ -80,6 +81,10 @@ class MainWindow(QMainWindow, MainWindowLayoutMixin):
         self._op: Op | None = None
         self._photos: list = []                     # PhotoResult of the current selection
         self._thumb_paths: dict[str, str] = {}       # uuid → fresh rendered JPEG (plugin)
+        # uuid's whose thumb came from the LrExportSession fallback, not
+        # requestJpegThumbnail — a one-shot render AutoCorrectWorker deletes
+        # itself right after decoding (see gpu_jpeg.cleanup_if_export).
+        self._export_photo_ids: frozenset[str] = frozenset()
         # Preview plan reusable by Apply (same selection).
         self._pending_adjustments: list | None = None
         self._pending_ids: frozenset[str] = frozenset()
@@ -245,6 +250,30 @@ class MainWindow(QMainWindow, MainWindowLayoutMixin):
             self.photo_list.addItem(f"  {cam}: {n} photo(s)")
         self.status_label.setText(f"Catalog indexed — {len(photos)} photo(s).")
         self._refresh_status()
+        self._offer_preview_size_fix(catalog_path)
+
+    def _offer_preview_size_fix(self, catalog_path: str | None) -> None:
+        """Analyze Catalog is where the Standard Preview Size gets checked.
+
+        `requestJpegThumbnail` never renders above that setting — it returns the
+        largest preview tier the catalog holds. On "Automatic" (and on any value
+        below the measurement grid) every render comes back sub-grid and gets
+        rejected, whatever the plugin does.
+
+        Read-only diagnostic ONLY: a direct SQLite edit of this setting was tried
+        and reverted (`core/catalog.py` — a live run wrote the value in the wrong
+        format and Lightroom's Library came back up empty). The Lr SDK has no
+        catalog-settings API either, so there is no safe automated path — the
+        user sets it themselves in Lr's own UI.
+        """
+        advice = catalogmod.preview_size_advice(catalog_path, render_metrics.MEASURE_LONG_EDGE)
+        if not advice:
+            return
+        QMessageBox.warning(self, "Lightroom preview size", advice)
+        self.status_label.setText(
+            f"Standard Preview Size below the {render_metrics.MEASURE_LONG_EDGE} px grid — "
+            f"set it manually in Lightroom (Catalog Settings > File Handling)."
+        )
 
     def _on_catalog_failed(self, message: str) -> None:
         self.analyze_catalog_btn.setEnabled(True)
@@ -334,6 +363,7 @@ class MainWindow(QMainWindow, MainWindowLayoutMixin):
         # cache/render_probe).
         if op in (Op.PREVIEW, Op.APPLY) and self.cb_embedded.isChecked():
             self._thumb_paths = {}
+            self._export_photo_ids = frozenset()
             self._launch_measure(result.photos)
             return
 
@@ -364,6 +394,7 @@ class MainWindow(QMainWindow, MainWindowLayoutMixin):
         # fallback in the worker), flagging the degradation.
         self.status_label.setText(f"Fresh render unavailable ({message}) — falling back to passive preview.")
         self._thumb_paths = {}
+        self._export_photo_ids = frozenset()
         self._launch_measure(self._photos)
 
     def _on_render_ready(self, thumbnails: dict) -> None:
@@ -372,6 +403,10 @@ class MainWindow(QMainWindow, MainWindowLayoutMixin):
             for photo_id, t in thumbnails.items()
             if t.thumbnail_path
         }
+        self._export_photo_ids = frozenset(
+            photo_id for photo_id, t in thumbnails.items()
+            if t.thumbnail_path and t.is_export
+        )
         got = len(self._thumb_paths)
         if got == 0:
             self.status_label.setText(
@@ -388,6 +423,7 @@ class MainWindow(QMainWindow, MainWindowLayoutMixin):
             )
             self._auto_worker = AutoCorrectWorker(
                 photos, analyze_only=True, thumbnail_paths=self._thumb_paths,
+                export_photo_ids=self._export_photo_ids,
             )
             self._auto_worker.progress.connect(self.status_label.setText)
             self._auto_worker.progress_count.connect(self._on_progress_count)
@@ -406,6 +442,7 @@ class MainWindow(QMainWindow, MainWindowLayoutMixin):
             axes=axes,
             forced_embedded=self.cb_embedded.isChecked(),
             thumbnail_paths=self._thumb_paths,
+            export_photo_ids=self._export_photo_ids,
             # Apply (seeds mode): measurement always re-decoded so as not to
             # recompute a delta on a stale render. Preview: the PreviewJPEG
             # cache is enough. Embedded mode: no effect (no measurement of the

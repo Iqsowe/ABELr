@@ -101,6 +101,7 @@ def _probe_once(photo_id: str, develop: dict, settle: float) -> render_metrics.B
         print(f"  [!] thumbnail missing (error={thumb.error})")
         return None
     chw = gpu_jpeg.decode_file(thumb.thumbnail_path)
+    gpu_jpeg.cleanup_if_export(thumb.thumbnail_path, thumb.is_export)
     if chw is None:
         print("  [!] unreadable thumbnail")
         return None

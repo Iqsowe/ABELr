@@ -7,13 +7,22 @@ Three channels, chosen for reliability/speed (user decision):
    settings. **Priority** channel; also the only one that lets us PROBE the response.
 2. **Previews.lrdata** (`previews.PreviewIndex`) — already-cached rendered preview. Free,
    fast, but may be stale/absent. Passive fallback.
-3. **LrExportSession** — full render export, slow/costly. Last resort (not wired
-   here; to be enabled on the plugin side if channel 1 turns out to return a stale cache).
+3. **LrExportSession** — full render export, slow/costly. Last resort, now wired on
+   the PLUGIN side (`Thumbnails.lua exportViaSession`): when `requestJpegThumbnail`
+   fails hard or only serves a persistent sub-grid tier, the plugin exports instead
+   and returns that path as `thumbnail_path` like any other channel-1 render —
+   `ThumbnailResult.is_export` is the only App-visible trace. This module still sees
+   it as `RenderChannel.THUMBNAIL`; the App-side EXPORT enum member below is
+   currently unused (kept for a future App-initiated export, distinct from the
+   plugin's own fallback).
 
 This module is **App-side**: it doesn't submit a job itself (that lives in the GUI
 workers via the queue). `resolve_render_path` locates the render **file** (channel
 priority only, no decoding) for the GPU pipeline (`gpu_jpeg`/`render_metrics_gpu`
-decode and measure it).
+decode and measure it). A THUMBNAIL-channel path that is an export fallback must be
+deleted by the caller after decode (`gpu_jpeg.cleanup_if_export`) — this function
+only locates the file, it does not know whether it's a one-shot export or a normal
+tier.
 """
 
 from __future__ import annotations

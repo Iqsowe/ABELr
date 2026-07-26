@@ -59,6 +59,12 @@ def _thumb_to_dict(t: ThumbnailResult) -> dict[str, Any]:
     d: dict[str, Any] = {"photo_id": t.photo_id, "thumbnail_path": t.thumbnail_path}
     if t.error:
         d["error"] = t.error
+    if t.width is not None:
+        d["width"] = t.width
+    if t.height is not None:
+        d["height"] = t.height
+    if t.is_export:
+        d["is_export"] = t.is_export
     if t.asshot_temp is not None:
         d["asshot_temp"] = t.asshot_temp
     if t.asshot_tint is not None:

@@ -123,6 +123,7 @@ def _read_asshot_temp_tint(photo_id: str, settle: float) -> tuple[float, float]:
 
 def _measure_neutral(thumb) -> render_metrics_gpu.NeutralStats | None:
     chw = gpu_jpeg.decode_file(thumb.thumbnail_path)
+    gpu_jpeg.cleanup_if_export(thumb.thumbnail_path, thumb.is_export)
     if chw is None:
         print("  [!] unreadable thumbnail")
         return None

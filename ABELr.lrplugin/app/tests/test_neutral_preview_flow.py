@@ -22,6 +22,7 @@ from app.tools.mock_plugin import (
     FakePlugin,
     render_probe_all_timeout,
     render_probe_error_status,
+    render_probe_fail_once_then_ok,
     render_probe_no_response,
     render_probe_ok,
     render_probe_partial,
@@ -224,6 +225,26 @@ def test_restore_error_emits_warning_but_anchor_is_still_cached(conn, plugin):
     assert outcome.n_refreshed == 4
     assert len(outcome.by_id) == 4
     assert outcome.failures == {}
+
+
+def test_hard_failure_is_not_retried(conn, plugin):
+    """A per-photo render_probe error with no thumbnail (Lr's own "error loading
+    thumb") is reported once, NOT resubmitted: the retry that used to sit here
+    recovered 0/1 on every live attempt while paying a second full probe. The
+    hook succeeds on any 2nd call for the same photo — so a run that retried
+    would end with 3 anchors and no failures."""
+    plugin.render_probe_hook = render_probe_fail_once_then_ok()
+    photos = _photos(3)
+    messages: list[str] = []
+    with plugin.run_in_thread():
+        outcome = npw.ensure_neutral_previews(
+            photos, conn, chunk_size=8, progress=messages.append,
+        )
+
+    assert outcome.n_refreshed == 0
+    assert outcome.by_id == {}
+    assert len(outcome.failures) == 3
+    assert not any("Retrying" in m for m in messages)
 
 
 def test_circuit_breaker_aborts_after_two_consecutive_failing_chunks(conn, plugin):

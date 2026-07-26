@@ -39,7 +39,14 @@ from typing import Callable
 
 from PySide6.QtCore import QThread, Signal
 
-from ..core import cache as cachemod, gpu, gpu_jpeg, render_metrics, render_metrics_gpu
+from ..core import (
+    cache as cachemod,
+    catalog as catalogmod,
+    gpu,
+    gpu_jpeg,
+    render_metrics,
+    render_metrics_gpu,
+)
 from ..server import budget
 from ..server.job_queue import job_queue
 from ..server.models import JobType, PhotoResult, ThumbnailResult
@@ -147,6 +154,7 @@ def _probe_chunk(
             failures[p.photo_id] = t.error or "no thumbnail returned"
             continue
         chw = gpu_jpeg.decode_file(t.thumbnail_path)
+        gpu_jpeg.cleanup_if_export(t.thumbnail_path, t.is_export)
         if chw is None:
             failures[p.photo_id] = "jpeg decode failed"
             continue
@@ -158,6 +166,29 @@ def _probe_chunk(
             continue
         out[p.photo_id] = (t, render_metrics_gpu.analyze_rendered_gpu_dual(chw))
     return out, failures
+
+
+def _annotate_undersized(failures: dict[str, str], photos: list[PhotoResult]) -> None:
+    """Appends the Catalog-Settings fix to every "undersized render" reason.
+
+    `requestJpegThumbnail` never renders above the catalog's Standard Preview
+    Size — it serves the largest tier it holds. On "Automatic" that cap sits
+    below the measurement grid on any sub-4K display, so every probe comes back
+    sub-grid and no amount of settle/retry changes it. No SDK call sets that
+    setting (LrCatalog exposes nothing for it), so the only fix is the user's:
+    the error has to name it, in place, rather than read as a plugin failure.
+    """
+    targets = [pid for pid, reason in failures.items() if "undersized render" in reason]
+    if not targets:
+        return
+    catalog_path = next((p.catalog_path for p in photos if p.catalog_path), None)
+    advice = catalogmod.preview_size_advice(catalog_path, render_metrics.MEASURE_LONG_EDGE)
+    if not advice:
+        return
+    _log.warning("%s", advice)
+    for pid in targets:
+        if advice not in failures[pid]:
+            failures[pid] = f"{failures[pid]} — {advice}"
 
 
 def _anchor_suspect(p: PhotoResult, dual, conn) -> bool:
@@ -295,7 +326,15 @@ def ensure_neutral_previews(
             settle, "probe",
         )
         got, chunk_failures = _probe_chunk(chunk, settle, timeout)
+        _annotate_undersized(chunk_failures, chunk)
         failures.update(chunk_failures)
+        by_id = {p.photo_id: p for p in chunk}
+
+        # NO retry on a per-photo hard failure ("error loading thumb"): one was
+        # added on 2026-07-26 and recovered 0/1 on every live attempt
+        # (abelr_app.log 13:36-13:42) while costing a second full probe — a
+        # photo Lr refuses to render is not a timing problem. It fails once,
+        # with its reason, and the run continues.
 
         # Restore failed on the plugin side (Fable 5 review L-03): the photo stayed
         # in a NEUTRAL state in Lightroom — strong signal, must be shown, never silent.
@@ -310,7 +349,6 @@ def ensure_neutral_previews(
             say(msg)
 
         # Stale-probe guard: single retry with a long settle, then hard failure.
-        by_id = {p.photo_id: p for p in chunk}
         suspects = [
             by_id[pid] for pid, (_t, dual) in got.items()
             if _anchor_suspect(by_id[pid], dual, conn)

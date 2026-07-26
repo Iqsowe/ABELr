@@ -78,6 +78,7 @@ class AutoCorrectWorker(QThread):
         axes: frozenset[str] = autocorrect.DEFAULT_AXES,
         forced_embedded: bool = False,
         thumbnail_paths: dict[str, str] | None = None,
+        export_photo_ids: frozenset[str] = frozenset(),
         analyze_only: bool = False,
         force_fresh_preview: bool = False,
     ) -> None:
@@ -86,6 +87,10 @@ class AutoCorrectWorker(QThread):
         self._axes = axes
         self._forced_embedded = forced_embedded
         self._thumbs = thumbnail_paths or {}
+        # photo_id's whose `self._thumbs` entry came from the LrExportSession
+        # fallback (Thumbnails.lua), not requestJpegThumbnail — a one-shot
+        # render, deleted right after `_collect_renders` decodes it.
+        self._export_ids = export_photo_ids
         self._analyze_only = analyze_only
         self._force_fresh_preview = force_fresh_preview
         self._profile_cache: dict[str, str | None] = {}  # path → in-camera creative profile
@@ -401,6 +406,10 @@ class AutoCorrectWorker(QThread):
             if path is None:
                 skipped += 1
                 continue
+            # Only the THUMBNAIL channel can be an export fallback — the
+            # PREVIEW channel is Lightroom's own Previews.lrdata cache and
+            # must never be deleted.
+            is_export_file = ch is measure.RenderChannel.THUMBNAIL and p.photo_id in self._export_ids
             psig = cachemod.raw_signature(path)
             cached = (
                 None if self._force_fresh_preview
@@ -408,11 +417,14 @@ class AutoCorrectWorker(QThread):
             )
             if cached is not None:
                 analysis_by_id[p.photo_id] = cached
+                gpu_jpeg.cleanup_if_export(path, is_export_file)
                 continue
             try:
                 stream = gpu_jpeg.extract_jpeg_stream(path.read_bytes())
             except OSError:
                 stream = None
+            finally:
+                gpu_jpeg.cleanup_if_export(path, is_export_file)
             if stream is None:
                 skipped += 1
                 continue

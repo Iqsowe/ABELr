@@ -17,6 +17,7 @@ from typing import Callable
 
 from PySide6.QtCore import QThread, Signal
 
+from ..core import catalog
 from ..server import budget
 from ..server.job_queue import job_queue
 from ..server.models import JobType, PhotoResult, ThumbnailResult
@@ -36,6 +37,7 @@ def fetch_thumbnails_chunked(
     progress: Callable[[str], None] | None = None,
     progress_count: Callable[[int, int], None] | None = None,
     chunk_size: int = _CHUNK_SIZE,
+    catalog_path: str | None = None,
 ) -> dict[str, ThumbnailResult]:
     """Fetches fresh-render thumbnails for `photo_ids` via small `get_thumbnails` jobs.
 
@@ -72,8 +74,41 @@ def fetch_thumbnails_chunked(
         else:
             for t in result.thumbnails:
                 out[t.photo_id] = t
+            _log_undersized(result.thumbnails, width, height, catalog_path)
         tick(min(start + len(chunk), total), total)
     return out
+
+
+def _log_undersized(thumbnails, width: int, height: int, catalog_path: str | None) -> None:
+    """Reports renders served below the requested grid, with the tier actually
+    served (`ThumbnailResult.width/height`, read from the JPEG by the plugin).
+
+    requestJpegThumbnail does not honour the requested size — it serves whichever
+    preview tier Lr has cached. Those renders are rejected downstream
+    (`reject_if_undersized`), and until now the only trace was one warning per
+    photo at decode time, with no way to tell "Lr has no 2048 tier for this
+    catalog" from "this one photo failed". A whole chunk coming back at the same
+    sub-grid size is the signature of the catalog's Standard Preview Size being
+    below the measurement grid.
+    """
+    want = max(width, height)
+    small = [t for t in thumbnails if t.width and max(t.width, t.height or 0) < want]
+    if not small:
+        return
+    sizes: dict[str, int] = {}
+    for t in small:
+        key = f"{t.width}x{t.height}"
+        sizes[key] = sizes.get(key, 0) + 1
+    advice = catalog.preview_size_advice(catalog_path, want) or (
+        "Lr serves a cached preview tier, not the requested size — check Catalog "
+        "Settings > File Handling > Standard Preview Size."
+    )
+    _log.warning(
+        "get_thumbnails: %d/%d render(s) below the %d grid — tiers served: %s. %s",
+        len(small), len(thumbnails), want,
+        ", ".join(f"{k} (x{n})" for k, n in sorted(sizes.items(), key=lambda kv: -kv[1])),
+        advice,
+    )
 
 
 class FreshRenderWorker(QThread):
@@ -96,6 +131,7 @@ class FreshRenderWorker(QThread):
             out = fetch_thumbnails_chunked(
                 ids, self._width, self._height,
                 progress=self.progress.emit, progress_count=self.progress_count.emit,
+                catalog_path=next((p.catalog_path for p in self._photos if p.catalog_path), None),
             )
             self.finished_result.emit(out)
         except Exception as exc:  # safety net, mirrors NeutralPreviewWorker

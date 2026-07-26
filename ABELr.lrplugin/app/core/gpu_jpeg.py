@@ -15,6 +15,7 @@ batch) — the caller counts it as "no render".
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +23,8 @@ import torch
 from torchvision.io import ImageReadMode, decode_jpeg
 
 from . import gpu
+
+_log = logging.getLogger("abelr.gpu_jpeg")
 
 _JPEG_SOI = b"\xff\xd8\xff"
 
@@ -84,3 +87,26 @@ def decode_file(path: str | Path) -> Optional[torch.Tensor]:
         return None
     res = decode_blobs([stream])
     return res[0] if res else None
+
+
+def cleanup_if_export(path: str | Path | None, is_export: bool) -> None:
+    """Deletes `path` if it came from the `Thumbnails.lua` LrExportSession
+    fallback (`ThumbnailResult.is_export`).
+
+    Every caller that decodes a `thumbnail_path` calls this right after, success
+    or failure — an export render is a one-shot file for this call alone,
+    unlike a normal `requestJpegThumbnail` tier which `fetch_thumbnails_chunked`
+    may still want to read again from another chunk (that ambiguity is exactly
+    why normal thumbnails are purged by age, not deleted eagerly — see
+    `Thumbnails.lua`'s header). An export path has no such second reader, so
+    there is no reason to wait for the age-based sweep.
+
+    Best-effort: a failed delete is a disk-space leak the sweep still catches,
+    never a reason to fail the caller's measurement.
+    """
+    if not is_export or not path:
+        return
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        _log.warning("cleanup_if_export: could not delete %s", path, exc_info=True)

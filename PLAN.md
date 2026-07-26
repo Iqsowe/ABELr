@@ -303,10 +303,129 @@ bug happened. The App computes the budget; Lua derives its wait from it.
 
 ### N5 — Live validation (**Lr required**)
 
-- [ ] **N5 — Probe 32 real photos at 2048.** Expect ~3 chunks × ~125 s. Record: wall-clock per
-  chunk vs budget, `n_refreshed`, `failures`, count of rejected undersized renders, whether
-  `/bridge` ever reports disconnected mid-chunk. Then a full run; confirm
-  `NeutralPreviewJPEG` row count reaches the selection size. Record evidence in this file.
+- [x] **N5 — Probe 32 real photos at 2048.** Run 2026-07-26, catalog "Last soirée Abreu",
+  32 real ARW selected in Lr, `render_probe` MCP tool (same `job_queue`/`JobType.RENDER_PROBE`
+  path as `ensure_neutral_previews`), neutral develop (WB=As Shot, Exposure2012=0, HSL 24
+  bands=0), 2048×2048. Chunked 16+16 (`_CHUNK_SIZE`; PLAN's "~3 chunks" estimate was stale —
+  actual is 2 chunks for 32 photos).
+  - Chunk 1 (16 photos): ~159.7 s wall-clock. 15 ok, 1 failure
+    (`904DD987-2D4C-4EC5-8004-71C0B9A9B60E`: `"error loading thumb"`, plugin-side, no
+    `thumbnail_path` returned — not a stale/undersized case, a hard per-photo job error).
+  - Chunk 2 (16 photos): ~148.2 s wall-clock. 16/16 ok.
+  - Both above the ~125 s/chunk estimate (~120-128%) but same order of magnitude.
+  - `bridge_status` polled after each chunk: `connected: true` throughout, never disconnected.
+  - Rejected-undersized count: 0 (all renders came back at the requested 2048 grid).
+  - Decode+measure+cache-write done locally (`gpu_jpeg.decode_file` →
+    `render_metrics_gpu.analyze_rendered_gpu_dual` → `cache.put_neutral_preview`, GPU: RTX 2080)
+    against the real `ABELr_cache.db` next to the catalog: **31/32** `NeutralPreviewJPEG` rows
+    reached (`n_written=31`, `n_decode_failed=0`, `n_undersized=0`) — the 1 missing row is
+    exactly the 1 chunk-1 job failure above, not a decode/measure loss.
+  - **Resolved the `Thumbnails.lua:264` blocking assumption** ("requestJpegThumbnail must
+    reflect the settings we just applied, not a stale cache — else needs an LrExportSession
+    fallback"): 29/32 selection photos already carried a real, non-zero current `Exposure2012`
+    (0.3-2.5 EV). 11 had a prior current-state `PreviewJPEG` to diff the neutral anchor
+    (`Exposure2012=0`) against — `_anchor_suspect`'s own L* check. 10/11 anchors landed 5-21
+    L* points from that baseline, matching the removed exposure; the 1 photo whose delta
+    stayed under the 2.0 threshold (`D777D7C2`, delta 0.86, unchanged after a 2.0 s-settle
+    retry) was checked byte-level — the two probe JPEGs differ (sha256, ~3 KB size delta),
+    not a literally-served cache — so it's a mask-specific tone-resistance false positive in
+    the guard, not a stale render. No LrExportSession fallback needed; comment updated in
+    `Thumbnails.lua`.
+  - **Correction 2, same day (supersedes the retry below — it is now removed).** Three
+    distinct defects were behind "the thumbnail fetch doesn't work", none of them the
+    stale-render one the retry targeted:
+    1. **`Thumbnails.fetch` accepted the first callback, whatever its size.** SDK doc
+       (`Lr_SDK_API/API Reference/modules/LrPhoto.html`): *request sizes are treated as
+       minimums; the smallest preview satisfying either dimension is returned*, and Lr
+       renders one only if the preview system doesn't already hold a satisfying tier.
+       The catalog's `AgPreviewBuilder_standardSize = automatic` resolves **below 2048**
+       on this machine, so Lr caps at a 1936-long-edge tier (and hands out a 484 one
+       when the big tier isn't ready) — the `undersized render 1936×1290 / 484×322`
+       flood in `abelr_app.log`. The photos are **not cropped** (`Adobe_images` 7008×4672,
+       `croppedWidth='uncropped'`), so crop is ruled out. `fetch` now parses the JPEG
+       SOF marker, keeps a sub-grid callback only as best-so-far, and waits for a better
+       tier (`UPGRADE_GRACE`); the served size travels to the App
+       (`ThumbnailResult.width/height`) and `fresh_render_worker` logs the tier
+       histogram per chunk. **Standard Preview Size = 2048 is now enforced by the App**:
+       `catalog.standard_preview_size` / `preview_size_advice` read
+       `AgPreviewBuilder_standardSize` out of the `.lrcat`, the reason is appended to
+       every "undersized render" failure, and *Analyze Catalog* offers to write the
+       setting (`catalog.set_standard_preview_size`, `.abelr.bak` backup first). The Lr
+       SDK has no catalog-settings API either, so a direct SQLite write
+       (`set_standard_preview_size`) plus a quit/write/relaunch sequence
+       (`core/lightroom_app.py`, `gui/preview_size_worker.py`) was built and run live on
+       the real catalog. **Reverted the same day.** The write used `str(int)` ("2048")
+       where Lightroom's own writer always stores this pref as a float string ("2048.0",
+       confirmed live: `AgImportDialog_standardPreviewSize = 1440.0`) — Lr's pref parser
+       rejected the int form and the Library came back up **empty** (catalog integrity
+       was fine throughout, 1057 `Adobe_images` rows intact, `PRAGMA integrity_check` =
+       ok — a value-format bug, not corruption, but severe enough live that editing this
+       file automatically was judged not worth the risk). Fixed forward once
+       (`f"{float(long_edge):.1f}"`) and re-verified live, then the whole write path —
+       `set_standard_preview_size`, `CatalogInUse`, `catalog_is_open`/`catalog_lock_path`,
+       `lightroom_app.py`, `preview_size_worker.py`, `test_lightroom_restart.py` — was
+       removed on request. `catalog.py` now only **reads** the setting
+       (`standard_preview_size`/`preview_size_advice`); *Analyze Catalog* shows the advice
+       in a dialog and the user sets it themselves in Lr's own Catalog Settings > File
+       Handling UI.
+  - **LrExportSession fallback added back** (PLAN.md N5's own open item: "an
+    LrExportSession fallback... may still be needed for photos that fail this hard").
+    `Thumbnails.lua`'s `exportViaSession`: after `Thumbnails.fetch`'s normal wait +
+    upgrade-grace, any photo still without a full-size render (hard failure OR a
+    persistent sub-grid tier) gets ONE `LrExportSession` render at the requested long
+    edge, using the photo's CURRENT develop settings (same contract `requestJpegThumbnail`
+    has — matters for `fetchProbe`, which calls into `Thumbnails.fetch` while the probed
+    settings are still applied). `LrExportSession` is a completely different Lr code path
+    from the async preview cache, so it is unaffected by the contention theorized in N5's
+    open item. Single attempt, no retry — the hard-failure retry removed from
+    `neutral_preview_worker.py` recovered 0/1 on every live attempt, a second export
+    wouldn't fare differently. `LR_reimportExportedPhoto=false` (must not create a new
+    catalog entry). ⚠️ **UNVERIFIED IN LIVE LR**: the `LR_*` export-settings keys are the
+    widely-used undocumented keys behind Lr's Export dialog — `documentation/Lr_SDK_API`
+    documents `LrExportSession`/`LrExportRendition` but not this settings table
+    (`LrExportSettings.html` only covers video presets). Needs one live reload + a real
+    stuck photo before trusting it in production.
+  - **Cleanup**: the exported JPEG is a one-shot render for that single call, unlike a
+    normal `requestJpegThumbnail` tier `fetch_thumbnails_chunked` might still want from
+    another chunk (the reason normal thumbnails are purged by age, not deleted eagerly).
+    `ThumbnailResult.is_export` (`models.py`) travels Lua → `PollingLoop.lua` (both
+    `get_thumbnails`/`render_probe` branches) → App; `gpu_jpeg.cleanup_if_export(path,
+    is_export)` deletes it right after decode, called from every decode site:
+    `neutral_preview_worker._probe_chunk`, `autocorrect_worker._collect_renders` (guarded
+    to the THUMBNAIL channel only — the PREVIEW channel is Lightroom's own
+    Previews.lrdata cache and must never be touched), and the calibration tools
+    (`calibrate_wb_response.py`, `calibrate_hsl_response.py`, `mcp_calibrate.py`).
+    Also fixed in passing: `app/mcp/server.py:_thumb_to_dict` never forwarded
+    `width`/`height` either (same whitelist-dict gap) — added alongside `is_export`.
+    Tests: `test_gpu_jpeg_cleanup.py`, `test_lua_contract.py` (fallback exists/single-attempt,
+    `is_export` forwarded on both branches).
+    2. **One callback = one `pending--`.** Lr can call back several times for one photo
+       (progressive tiers); the counter went negative and ended the wait before the
+       other photos had answered. Now one-shot per photo (`state[i].closed/stopped`).
+    3. **`tmp_thumbs` files deleted before the App read them.** `purgeStaleFiles`
+       deleted generation-2 at the start of each fetch, but `fetch_thumbnails_chunked`
+       collects paths across N chunks and only decodes after the last one — chunk 1's
+       JPEGs were gone by chunk 3, silently degrading the measurement to the passive
+       Previews.lrdata tier. Purge is now age-based (`RETENTION_HOURS = 6`), and
+       `sweepOldFiles` reads "now" from a marker file it just wrote instead of comparing
+       `LrDate.currentTime()` against `fileModificationDate` across two unverified epochs
+       (831 files, all under 11h old, disappeared under a 24h cutoff).
+  - **Correction, same day** (retry now REMOVED, see Correction 2): added a single hard-failure retry to `ensure_neutral_previews`
+    (`neutral_preview_worker.py`, mirrors the existing stale-anchor retry — `_RETRY_SETTLE`,
+    logged via `_log.info` so it's visible in `abelr_app.log`) after a real GUI failure
+    reproduced the `"error loading thumb"` case live. It fixed the transient version (a
+    same-photo retry a few seconds later succeeds). But a **second, persistent** failure mode
+    surfaced live the same session: `requestJpegThumbnail` failed for one photo across 5
+    independent calls (`render_probe` at settle 0.6/2/3s, `get_thumbnails` at 512/2048px) —
+    not transient, retry does not help. That photo was the one open large in Lr's Develop
+    module at the time (Lr rendered it fine there — not a corrupted RAW); leading theory is
+    `requestJpegThumbnail` can't service async requests for the actively-open Develop photo
+    (contention with the interactive renderer), unconfirmed. **So the "no export fallback
+    needed" call above was too strong** — true for transient hiccups, false for this
+    persistent case. Open item: confirm the active-Develop-photo theory (retest once a
+    different photo is open in Develop) and decide whether `ensure_neutral_previews` needs a
+    2nd-tier fallback (e.g. skip + report distinctly from a normal failure, or the
+    `LrExportSession` path the original comment anticipated) for a photo that fails this hard.
 
 ---
 
@@ -417,7 +536,27 @@ value crosses to host, not how it's computed).
 The axis with the largest MAE (2.86 L*) is the only one whose response is a prior, not a
 measurement. If the true slope is 14 or 20 instead of 17.0, every solve is biased 15–20%.
 
-- [ ] **X1 — `calibrate_exposure` in `app/tools/mcp_calibrate.py`.** Reuse the existing
+- [x] **X1 — `calibrate_exposure` in `app/tools/mcp_calibrate.py`.** Done 2026-07-26.
+  `response.clip_ok`/`MAX_CLIP_FRAC` (new) reject clipped samples before they enter
+  `ExposureResponse`. `_pick_exposure_reference` scans cached `InCameraJPEG.tone_sharp`,
+  scoring `20*(clipped_hi+clipped_lo) + |median_l-50|` (margin weighted over raw mid-tone
+  hit — first cut, weighted only by `|median_l-50|`, kept picking a narrow-latitude photo
+  where ±2 EV blew past the clip threshold on both ends). Live run, catalog "Last soirée
+  Abreu", auto-picked `BF3F6AA4-E2F9-4118-8622-073748F7AB8F` (a real narrow-latitude party
+  shot — dark background, small clean margin either side): default deltas
+  `{-2,-1,-0.5,0.5,1,2}` only survived n=2/6 (±2 and ±1/±0.5 clipped) — too thin to trust.
+  Re-probed the same reference at deltas fit to its actual headroom
+  (`-0.4,-0.2,0,0.3,0.6,1.0`): n=5/6 survived (EV-0.4 still clipped, rejected).
+  Measured **sharp-zone** L* (matches `autocorrect`'s consumer): EV-0.2→47.79, EV0→50.66,
+  EV+0.3→54.25, EV+0.6→56.74, EV+1→58.29 — monotonic, decreasing slope toward highlights
+  (roll-off, matches the physical prior's own caveat). `slope_at(50)` ≈ 14.35 L*/EV vs the
+  `NOMINAL_DL_DEV` prior of 17.0. Saved to
+  `app/data/response_cache/ILCE-7M4__Neutral.json`. `ILCE-7M4|IN` profile left uncalibrated
+  (no probe run against it this session — same "no candidate forced" discipline as CAL1's
+  Green band).
+  Test: extended `app/tests/test_response.py` — non-monotonic segment pick, out-of-range
+  nearest-segment fallback, `clip_ok` accept/reject/boundary. 375 passed, 3 deselected
+  (`app/tests -q -m "not gpu"`), `check_docs` green. Lr: yes (live probes above).
   MCP-client transport and `--photo-id` bypass (both already solve the port-5000 conflict and
   the Lr-selection requirement). Probe `Exposure2012 ∈ {−2, −1, −0.5, +0.5, +1, +2}`, measure
   `sharp.tone.median_l` of each render, fit `ExposureResponse.ev/lstar`, `response.save`.

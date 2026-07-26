@@ -78,6 +78,18 @@ class ThumbnailResult(BaseModel):
     photo_id: str
     thumbnail_path: Optional[str] = None  # local absolute path of the JPEG, or None on error
     error: Optional[str] = None
+    # Actual pixel size of the JPEG, read from its SOF marker by the plugin.
+    # requestJpegThumbnail ignores the requested size and serves whichever
+    # preview tier Lr has cached, so "which size did we really get" is only
+    # knowable per result (cache.py ANALYSIS_VERSION "v8-grid-enforced").
+    width: Optional[int] = None
+    height: Optional[int] = None
+    # True if requestJpegThumbnail never delivered a full-size render and this
+    # JPEG came from the LrExportSession fallback instead (Thumbnails.lua
+    # exportViaSession). A one-shot render, not a cached tier some other chunk
+    # might still want — callers delete it themselves right after decoding
+    # (see gpu_schedule._delete_if_export / fresh_render_worker / mcp tools).
+    is_export: bool = False
     # Filled by render_probe: numeric Temperature/Tint read back after the apply
     # (if the probe sets WhiteBalance='As Shot', this is the As Shot numeric value).
     asshot_temp: Optional[float] = None

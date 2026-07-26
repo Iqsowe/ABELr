@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -34,14 +35,46 @@ from mcp import ClientSession  # noqa: E402
 from mcp.client.streamable_http import streamablehttp_client  # noqa: E402
 
 from app.core import gpu, gpu_jpeg, render_metrics, render_metrics_gpu, response  # noqa: E402
-from app.core.response import BandResponse, WBResponse, fit_linear_response  # noqa: E402
+from app.core.response import BandResponse, ExposureResponse, WBResponse, fit_linear_response  # noqa: E402
 
 _MCP_URL = "http://127.0.0.1:5000/mcp"
 _AXES = {"Saturation": "median_chroma", "Luminance": "median_l", "Hue": "median_hue"}
 _DEFAULT_HSL_DELTAS = (-15.0, -8.0, 0.0, 8.0, 15.0)
 _DEFAULT_TEMP_DELTAS = (-400.0, -200.0, 0.0, 200.0, 400.0)
 _DEFAULT_TINT_DELTAS = (-15.0, -8.0, 0.0, 8.0, 15.0)
+_DEFAULT_EXPOSURE_DELTAS = (-2.0, -1.0, -0.5, 0.5, 1.0, 2.0)
 _MIN_NEUTRAL_FRAC = 0.01
+
+
+_REFERENCE_HEADROOM_FRAC = 0.01  # stricter than response.clip_ok's per-sample 0.05:
+# the reference must have HEADROOM for a +-2EV probe, not just pass at EV0.
+
+
+def _pick_exposure_reference(db_path: Path, headroom: float = _REFERENCE_HEADROOM_FRAC) -> str:
+    """Scans cached `InCameraJPEG.tone_sharp` for the uuid whose sharp-zone
+    median L* sits closest to 50 (mid-tone) with near-zero clipping —
+    evidence-based pick, same pattern CAL1/CAL2 used for HSL/WB (PLAN.md X1)."""
+    uri = f"file:{Path(db_path).resolve()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        best_uuid, best_score = None, float("inf")
+        rows = conn.execute("SELECT uuid, tone_sharp FROM InCameraJPEG WHERE tone_sharp IS NOT NULL")
+        for uuid, tone_json in rows:
+            tone = json.loads(tone_json)
+            if not response.clip_ok(tone["clipped_hi"], tone["clipped_lo"], max_frac=headroom):
+                continue
+            # Headroom for a +-2EV probe matters more than an exact mid-tone
+            # hit: weight clip margin over |median_l-50|.
+            score = 20.0 * (tone["clipped_hi"] + tone["clipped_lo"]) + abs(tone["median_l"] - 50.0)
+            if score < best_score:
+                best_score, best_uuid = score, uuid
+        if best_uuid is None:
+            raise RuntimeError(
+                f"no InCameraJPEG.tone_sharp row with clip <= {headroom} (all clipped, or empty cache)"
+            )
+        return best_uuid
+    finally:
+        conn.close()
 
 
 class McpProbe:
@@ -99,6 +132,7 @@ async def _calibrate_band_axis(
         if thumb is None:
             continue
         chw = gpu_jpeg.decode_file(thumb["thumbnail_path"])
+        gpu_jpeg.cleanup_if_export(thumb["thumbnail_path"], thumb.get("is_export", False))
         if chw is None:
             print("  [!] unreadable thumbnail")
             continue
@@ -128,6 +162,7 @@ async def _measure_neutral(probe: McpProbe, photo_id: str, develop: dict, settle
     if thumb is None:
         return None
     chw = gpu_jpeg.decode_file(thumb["thumbnail_path"])
+    gpu_jpeg.cleanup_if_export(thumb["thumbnail_path"], thumb.get("is_export", False))
     if chw is None:
         print("  [!] unreadable thumbnail")
         return None
@@ -165,6 +200,52 @@ async def _calibrate_wb_axis(
     slope_b = fit_linear_response(xs, ys_b)
     print(f"  {axis:<12} n={len(xs)}/{len(deltas)}  da/d{axis}={slope_a:+.5f}  db/d{axis}={slope_b:+.5f}")
     return slope_a, slope_b, len(xs)
+
+
+async def _calibrate_exposure_axis(
+    probe: McpProbe, photo_id: str, deltas: list[float], settle: float,
+) -> tuple[list[float], list[float]]:
+    # Sharp-zone L*, matching the consumer (`autocorrect` solves on
+    # `sharp.tone.median_l`, PLAN.md X1) — not the global scope.
+    xs: list[float] = []
+    ys: list[float] = []
+    for d in deltas:
+        thumb = await probe.probe(photo_id, {"Exposure2012": d}, settle)
+        if thumb is None:
+            continue
+        chw = gpu_jpeg.decode_file(thumb["thumbnail_path"])
+        gpu_jpeg.cleanup_if_export(thumb["thumbnail_path"], thumb.get("is_export", False))
+        if chw is None:
+            print("  [!] unreadable thumbnail")
+            continue
+        undersized = render_metrics_gpu.reject_if_undersized(width=chw.shape[-1], height=chw.shape[-2])
+        if undersized is not None:
+            print(f"  [!] {undersized}")
+            continue
+        tone = render_metrics_gpu.analyze_rendered_gpu_dual(chw).sharp.tone
+        if not response.clip_ok(tone.clipped_hi, tone.clipped_lo):
+            print(f"  [!] EV{d:+g}: clipped (hi={tone.clipped_hi:.3f} lo={tone.clipped_lo:.3f}) — rejected")
+            continue
+        xs.append(d)
+        ys.append(tone.median_l)
+    print(f"  Exposure2012  n={len(xs)}/{len(deltas)}")
+    return xs, ys
+
+
+async def _run_exposure(args) -> None:
+    async with streamablehttp_client(_MCP_URL) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            probe = McpProbe(session)
+            xs, ys = await _calibrate_exposure_axis(probe, args.photo_id, args.deltas, args.settle)
+            if len(xs) < 2:
+                raise RuntimeError(f"Not enough usable probes (n={len(xs)}, need >=2).")
+            model = response.load(args.camera, args.profile)
+            model.exposure = ExposureResponse(ev=xs, lstar=ys)
+            path = response.save(model)
+            print(f"\nExposure response saved: {path}")
+            for d, l_val in zip(xs, ys):
+                print(f"  EV{d:+g} -> L*{l_val:.2f}")
 
 
 async def _run_hsl(args) -> None:
@@ -248,6 +329,14 @@ def main() -> None:
     wb.add_argument("--tint-deltas", default=",".join(str(d) for d in _DEFAULT_TINT_DELTAS))
     wb.add_argument("--settle", type=float, default=0.6)
 
+    exp = sub.add_parser("exposure")
+    exp.add_argument("--photo-id", default=None, help="explicit uuid (default: auto-pick, needs --catalog)")
+    exp.add_argument("--catalog", default=None, help="catalog folder or ABELr_cache.db path (for auto-pick)")
+    exp.add_argument("--camera", required=True)
+    exp.add_argument("--profile", required=True)
+    exp.add_argument("--deltas", default=",".join(str(d) for d in _DEFAULT_EXPOSURE_DELTAS))
+    exp.add_argument("--settle", type=float, default=0.6)
+
     a = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -260,10 +349,22 @@ def main() -> None:
         a.bands = [b.strip() for b in a.bands.split(",") if b.strip()]
         a.deltas = [float(d) for d in a.deltas.split(",")]
         asyncio.run(_run_hsl(a))
-    else:
+    elif a.mode == "wb":
         a.temp_deltas = [float(d) for d in a.temp_deltas.split(",")]
         a.tint_deltas = [float(d) for d in a.tint_deltas.split(",")]
         asyncio.run(_run_wb(a))
+    else:
+        if not a.photo_id:
+            if not a.catalog:
+                raise SystemExit("exposure mode needs --photo-id or --catalog (for auto-pick)")
+            db_path = Path(a.catalog)
+            from app.core import cache as _cache
+            if db_path.is_dir():
+                db_path = db_path / _cache.CACHE_FILENAME
+            a.photo_id = _pick_exposure_reference(db_path)
+            print(f"Auto-picked reference photo: {a.photo_id}")
+        a.deltas = [float(d) for d in a.deltas.split(",")]
+        asyncio.run(_run_exposure(a))
 
 
 if __name__ == "__main__":

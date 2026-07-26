@@ -210,6 +210,28 @@ def render_probe_partial(n_fail: int, level: int = 140) -> RenderProbeHook:
     return _hook
 
 
+def render_probe_fail_once_then_ok(level: int = 140) -> RenderProbeHook:
+    """Each photo's FIRST render_probe call fails (no thumbnail), any later call
+    succeeds — simulates the transient per-photo Lr hiccup confirmed live
+    (PLAN.md N5, "error loading thumb" that recovered on a same-photo retry)."""
+    seen: set[str] = set()
+
+    def _hook(job: dict) -> dict:
+        ids = _probe_ids(job)
+        thumbs = []
+        for pid in ids:
+            if pid not in seen:
+                seen.add(pid)
+                thumbs.append({"photo_id": pid, "thumbnail_path": None, "error": "error loading thumb"})
+            else:
+                thumbs.append({
+                    "photo_id": pid, "thumbnail_path": _write_gray_jpeg(pid, level),
+                    "asshot_temp": FAKE_ASSHOT["temp"], "asshot_tint": FAKE_ASSHOT["tint"],
+                })
+        return {"job_id": job["job_id"], "status": "ok", "photos": [], "thumbnails": thumbs}
+    return _hook
+
+
 def render_probe_all_timeout() -> RenderProbeHook:
     """Every photo in the chunk fails (status stays 'ok' — a per-item timeout,
     not a job-level failure — mirrors Thumbnails.lua marking pending entries

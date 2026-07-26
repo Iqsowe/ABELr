@@ -120,3 +120,31 @@ def test_polling_loop_forwards_timeout_s_on_both_branches():
     probe_block = _branch(text, "render_probe")
     assert "payload.timeout_s" in thumbs_block
     assert "payload.timeout_s" in probe_block
+
+
+def test_polling_loop_forwards_is_export_on_both_branches():
+    """The App deletes an export-fallback JPEG itself right after decoding it
+    (gpu_jpeg.cleanup_if_export) — it can only do that if it knows which
+    thumbnails are one-shot exports, not a cached requestJpegThumbnail tier."""
+    text = POLLING_LOOP_LUA.read_text(encoding="utf-8")
+    thumbs_block = _branch(text, "get_thumbnails")
+    probe_block = _branch(text, "render_probe")
+    assert "is_export" in thumbs_block
+    assert "is_export" in probe_block
+
+
+def test_export_fallback_exists_and_is_single_attempt():
+    """PLAN.md N5's open item ("an LrExportSession fallback... may still be
+    needed for photos that fail this hard") — pins that the fallback exists,
+    runs Lr's own export pipeline (not requestJpegThumbnail), never re-imports
+    the render into the catalog, and is attempted once per photo (no retry —
+    the hard-failure retry removed from neutral_preview_worker.py recovered
+    0/1 on every live attempt; a second export wouldn't fare differently)."""
+    text = THUMBNAILS_LUA.read_text(encoding="utf-8")
+    assert "local function exportViaSession(photo, longEdge)" in text
+    assert "LrExportSession {" in text
+    assert "LR_reimportExportedPhoto      = false" in text
+    assert "doExportOnCurrentTask" in text
+    # Called from within Thumbnails.fetch's own body, not a caller-side loop
+    # that could retry it.
+    assert text.count("exportViaSession(photo, math.max(width, height))") == 1

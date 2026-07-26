@@ -128,6 +128,15 @@ local function dispatch(job)
                 photo_id       = t.photo_id,
                 thumbnail_path = t.thumbnail_path,
                 error          = t.error,
+                -- Actual pixel size served by requestJpegThumbnail (it ignores
+                -- the requested one and serves a cached preview tier) — the App
+                -- rejects sub-grid renders and needs to name the size it got.
+                width          = t.width,
+                height         = t.height,
+                -- True if this came from the LrExportSession fallback instead
+                -- of requestJpegThumbnail — the App deletes the file itself
+                -- right after decoding it (see Thumbnails.fetch header).
+                is_export      = t.is_export,
             }
             if t.thumbnail_path then
                 nOk = nOk + 1
@@ -167,6 +176,9 @@ local function dispatch(job)
                 photo_id       = t.photo_id,
                 thumbnail_path = t.thumbnail_path,
                 error          = t.error,
+                width          = t.width,
+                height         = t.height,
+                is_export      = t.is_export,
                 asshot_temp    = t.asshot_temp,
                 asshot_tint    = t.asshot_tint,
                 restore_error  = t.restore_error,

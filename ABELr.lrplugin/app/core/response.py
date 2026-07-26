@@ -40,6 +40,15 @@ _CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "response_cache"
 # (roll-off) and INCREASES in shadows; this scalar is only a median prior.
 NOMINAL_DL_DEV = 17.0  # L* per stop, near mid-tones — a prior, not a profile truth.
 
+# A probe sample near either clipping wall poisons slope_at (the curve
+# saturates there) — reject before it enters ev/lstar.
+MAX_CLIP_FRAC = 0.05
+
+
+def clip_ok(clipped_hi: float, clipped_lo: float, max_frac: float = MAX_CLIP_FRAC) -> bool:
+    """True if a probed sample's clipped fractions are low enough to trust."""
+    return clipped_hi <= max_frac and clipped_lo <= max_frac
+
 
 @dataclass
 class ExposureResponse:
