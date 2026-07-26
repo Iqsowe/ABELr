@@ -168,6 +168,9 @@ class BandResponse:
     dl_dlum: float = 0.0
     dhue_dhue: float = 0.0
 
+    def is_calibrated(self) -> bool:
+        return any(abs(v) > 1e-9 for v in (self.dchroma_dsat, self.dl_dlum, self.dhue_dhue))
+
 
 @dataclass
 class ResponseModel:

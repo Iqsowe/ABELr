@@ -491,7 +491,7 @@ rather than working around it.
   ("Prepare neutral anchors"), enabled only when the embedded checkbox is checked. "Test bridge"
   moves to a discreet status bar — it's a diagnostic, not a step.
 
-- [ ] **U2 — Persistent status panel** (what the stubs should have been). A read-only grid,
+- [x] **U2 — Persistent status panel** (what the stubs should have been). A read-only grid,
   refreshed on the existing 1 s timer (`_bridge_timer`) and after every operation: catalog photo
   count · references marked / **usable** (the delta is already computed at
   `main_window.py:544-554`, just buried in a list) · fresh neutral anchors for the current

@@ -399,6 +399,11 @@ def list_seed_uuids(conn: sqlite3.Connection) -> list[str]:
     return [r["uuid"] for r in rows]
 
 
+def count_pictures(conn: sqlite3.Connection) -> int:
+    """Total `LightroomPicture` rows — catalog photo count (PLAN.md U2 status panel)."""
+    return conn.execute("SELECT COUNT(*) AS n FROM LightroomPicture").fetchone()["n"]
+
+
 def get_picture(conn: sqlite3.Connection, uuid: str) -> Optional[dict[str, Any]]:
     """`LightroomPicture` row (path, current_develop, is_seed…), no freshness check."""
     row = conn.execute("SELECT * FROM LightroomPicture WHERE uuid=?", (uuid,)).fetchone()

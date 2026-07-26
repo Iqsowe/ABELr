@@ -49,6 +49,10 @@ class AutoCorrectResult:
     # marked > usable ⇒ silent embedded fallback to flag on the GUI side.
     seeds_marked: int = 0
     seeds_usable: int = 0
+    # Detected (camera, in-camera profile) used to load the response model —
+    # None in analyze_only mode (no plan() call, cf. PLAN.md U2 status panel).
+    camera: str | None = None
+    profile: str | None = None
 
 
 def _safe(fn) -> None:
@@ -266,6 +270,8 @@ class AutoCorrectWorker(QThread):
                     notes=notes,
                     seeds_marked=seeds_marked,
                     seeds_usable=len(seed_pool),
+                    camera=camera,
+                    profile=profile,
                 )
             )
         except Exception as exc:  # safety net

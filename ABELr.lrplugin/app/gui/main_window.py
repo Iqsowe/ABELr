@@ -30,7 +30,9 @@ Otherwise → fall back to `LrExportSession` on the plugin side (see
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
+import logging
+
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QGroupBox,
@@ -40,16 +42,19 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QProgressBar,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ..core import cache as cachemod
-from ..core import render_metrics
+from ..core import render_metrics, response
 from ..server.job_queue import job_queue
 from ..server.models import JobResult, JobType
+from . import status as statusmod
 from .autocorrect_worker import AutoCorrectResult, AutoCorrectWorker
 from .fresh_render_worker import FreshRenderWorker
+from .log_bridge import QtLogHandler
 from .neutral_preview_worker import NeutralPreviewWorker
 from .job_worker import JobWorker
 
@@ -69,6 +74,13 @@ class MainWindow(QMainWindow):
         self._neutral_worker: NeutralPreviewWorker | None = None
         self._apply_worker: JobWorker | None = None
         self._seed_worker: JobWorker | None = None
+
+        # U2 status panel: state that already exists in the DB/response cache
+        # but was never surfaced anywhere. Updated as it becomes known, never
+        # reset by an operation that didn't touch it.
+        self._catalog_path: str | None = None
+        self._last_camera: str | None = None
+        self._last_profile: str | None = None
 
         # Minimal state machine: the current op, the selection and the fresh
         # render are kept between hops (selection → render → measurement).
@@ -138,7 +150,24 @@ class MainWindow(QMainWindow):
             "Applies the Preview plan if one exists, otherwise measures + plans + applies."
         )
 
+        # U2: status panel (read-only grid, refreshed on the bridge timer and
+        # after every operation) + Plan/Log tabs — split out of the single
+        # `photo_list` dumping ground the plan lines, diagnostics/warnings and
+        # the L2 log stream used to share.
+        self.status_panel = QListWidget()
+        self.status_panel.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.status_panel.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # read-only display
+        self.status_panel.setMaximumHeight(140)
+
         self.photo_list = QListWidget()
+        self.log_list = QListWidget()
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.photo_list, "Plan")
+        self.tabs.addTab(self.log_list, "Log")
+
+        self._log_handler = QtLogHandler(level=logging.WARNING)
+        self._log_handler.record.connect(self.log_list.addItem)
+        logging.getLogger("abelr").addHandler(self._log_handler)
 
         self.test_btn.clicked.connect(self._on_check)
         self.analyze_catalog_btn.clicked.connect(self._on_analyze_catalog)
@@ -190,8 +219,10 @@ class MainWindow(QMainWindow):
         g3.addLayout(actions_row)
         layout.addWidget(group3)
 
+        layout.addWidget(QLabel("Status:"))
+        layout.addWidget(self.status_panel)
         layout.addWidget(self.plan_summary_label)
-        layout.addWidget(self.photo_list)
+        layout.addWidget(self.tabs)
 
         container = QWidget()
         container.setLayout(layout)
@@ -204,8 +235,10 @@ class MainWindow(QMainWindow):
 
         self._bridge_timer = QTimer(self)
         self._bridge_timer.timeout.connect(self._refresh_bridge)
+        self._bridge_timer.timeout.connect(self._refresh_status)
         self._bridge_timer.start(1000)
         self._refresh_bridge()
+        self._refresh_status()
 
     # ------------------------------------------------------------------ #
     def _refresh_bridge(self) -> None:
@@ -219,6 +252,30 @@ class MainWindow(QMainWindow):
                 "Plugin bridge: ○ inactive — in Lightroom: "
                 "Library > Plug-in Extras > Start / connect the application"
             )
+
+    def _refresh_status(self) -> None:
+        """U2: rebuild the read-only status grid. Cheap (local DB reads only,
+        no Lr job) — safe to call on the 1s timer and after every operation."""
+        conn = None
+        if self._catalog_path:
+            try:
+                conn = cachemod.open_cache(self._catalog_path)
+            except Exception:
+                conn = None
+        model = (
+            response.load(self._last_camera, self._last_profile)
+            if self._last_camera or self._last_profile else None
+        )
+        try:
+            snap = statusmod.build_status(
+                conn, self._photos, model, bridge_connected=job_queue.bridge_connected(),
+            )
+        finally:
+            if conn is not None:
+                conn.close()
+        self.status_panel.clear()
+        for line in statusmod.format_status_lines(snap):
+            self.status_panel.addItem(line)
 
     def _set_actions_enabled(self, enabled: bool) -> None:
         for btn in (self.mark_refs_btn, self.unmark_refs_btn, self.preview_btn, self.apply_btn):
@@ -320,6 +377,8 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Empty catalog or no photo returned.")
             return
         catalog_path = next((p.catalog_path for p in photos if p.catalog_path), None)
+        if catalog_path:
+            self._catalog_path = catalog_path
         n_seeds = 0
         if catalog_path:
             try:
@@ -339,6 +398,7 @@ class MainWindow(QMainWindow):
         for cam, n in sorted(cameras.items(), key=lambda kv: -kv[1]):
             self.photo_list.addItem(f"  {cam}: {n} photo(s)")
         self.status_label.setText(f"Catalog indexed — {len(photos)} photo(s).")
+        self._refresh_status()
 
     def _on_catalog_failed(self, message: str) -> None:
         self.analyze_catalog_btn.setEnabled(True)
@@ -371,12 +431,16 @@ class MainWindow(QMainWindow):
             self.status_label.setText("No photo selected in Lightroom.")
             return
         self._photos = result.photos
+        catalog_path = next((p.catalog_path for p in result.photos if p.catalog_path), None)
+        if catalog_path:
+            self._catalog_path = catalog_path
         op = self._op
 
         if op == "seed_remove":
             self._apply_seed_flag(result.photos, False)
             self._set_actions_enabled(True)
             self._progress_done()  # DB flag only, no image measurement
+            self._refresh_status()
             return
 
         if op == "neutral":
@@ -531,11 +595,13 @@ class MainWindow(QMainWindow):
             f"References marked + analyzed — {res.n_measured} measured, "
             f"{res.n_skipped} without render · usable pool: {res.seeds_usable}/{res.seeds_marked}."
         )
+        self._refresh_status()
 
     def _on_neutral_done(self, message: str) -> None:
         self._set_actions_enabled(True)
         self._progress_done()
         self.status_label.setText(message)
+        self._refresh_status()
 
     def _format_adjustment(self, adj) -> str:
         """Preview line "key: current → target (delta)" — embedded values are
@@ -555,6 +621,9 @@ class MainWindow(QMainWindow):
         return f"  {adj.photo_id[:8]} → " + ", ".join(parts)
 
     def _on_plan_ready(self, res: AutoCorrectResult) -> None:
+        if res.camera or res.profile:
+            self._last_camera, self._last_profile = res.camera, res.profile
+        self._refresh_status()
         diag = res.diagnostics
         self.photo_list.clear()
         if diag is not None:
@@ -694,6 +763,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(msg)
         else:
             self.status_label.setText(f"Apply: {applied}/{total} — {result.error}")
+        self._refresh_status()
 
     def _on_auto_failed(self, message: str) -> None:
         self._set_actions_enabled(True)
@@ -715,4 +785,8 @@ class MainWindow(QMainWindow):
             if worker is not None and worker.isRunning():
                 worker.quit()
                 worker.wait(5000)
+        # Detach the Log tab's handler — otherwise a closed-but-not-destroyed
+        # window (or a second MainWindow) keeps receiving abelr.* WARNING+
+        # records into a QListWidget nobody is looking at.
+        logging.getLogger("abelr").removeHandler(self._log_handler)
         super().closeEvent(event)
