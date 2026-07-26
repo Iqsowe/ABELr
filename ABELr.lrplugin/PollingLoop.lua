@@ -109,8 +109,8 @@ local function dispatch(job)
         }
     elseif jobType == 'get_thumbnails' then
         local payload  = job.payload or {}
-        local width    = payload.width  or 512
-        local height   = payload.height or 512
+        local width    = payload.width  or 2048
+        local height   = payload.height or 2048
         local budget   = payload.timeout_s
         local thumbs
         if payload.photo_ids and #payload.photo_ids > 0 then
@@ -165,8 +165,8 @@ local function dispatch(job)
         -- Used to calibrate the ∂render/∂slider response and the neutral anchor render.
         local payload     = job.payload or {}
         local adjustments = payload.adjustments or {}
-        local width       = payload.width  or 512
-        local height      = payload.height or 512
+        local width       = payload.width  or 2048
+        local height      = payload.height or 2048
         local settle      = payload.settle
         local budget      = payload.timeout_s
         local thumbs      = Thumbnails.fetchProbe(adjustments, width, height, settle, budget)

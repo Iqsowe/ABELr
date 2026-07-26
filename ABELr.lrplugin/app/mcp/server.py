@@ -132,8 +132,8 @@ async def get_catalog_photos(include_develop: bool = False, timeout: float = 120
 @mcp.tool()
 async def get_thumbnails(
     photo_ids: Optional[list[str]] = None,
-    width: int = 512,
-    height: int = 512,
+    width: int = 2048,
+    height: int = 2048,
     timeout: float = 120.0,
 ) -> dict:
     """Renders JPEG thumbnails of the selection (or of specific `photo_ids`).
@@ -170,7 +170,7 @@ async def render_probe(
     `width`/`height` default to the App's own measurement grid (PLAN.md R1) —
     a probe rendered smaller than that is rejected as an undersized
     measurement (`render_metrics_gpu.reject_if_undersized`) wherever it feeds
-    a calibration; Lua's 512 default (`PollingLoop.lua`) is a legacy fallback
+    a calibration; Lua's 2048 default (`PollingLoop.lua`) is a legacy fallback
     only, reached if this tool is called without the App's own defaults.
     """
     require_bridge()
@@ -178,7 +178,7 @@ async def render_probe(
         raise ToolError("No adjustment provided.")
     if timeout is None:
         # PLAN.md X3: the old max(30, 5*n) was under-dimensioned at the
-        # measurement grid (tuned for the 512 default) — route through the
+        # measurement grid (tuned for the 2048 default) — route through the
         # same budget the plugin's own workers use (PLAN.md N3).
         timeout = budgetmod.job_timeout(len(adjustments), width, height, settle, "probe")
     payload = {

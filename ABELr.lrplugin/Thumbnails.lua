@@ -29,12 +29,12 @@ local Utils           = require 'Utils'
 
 local Thumbnails = {}
 
-local THUMB_TIMEOUT = 15  -- floor: max seconds for a small batch of thumbnails
+local THUMB_TIMEOUT = 60  -- floor: max seconds for a small batch of thumbnails
 -- Fallback per-photo budget when the App doesn't ship a "timeout_s" (older
 -- App, MCP tools) — PLAN.md N3c. The shared app.server.budget module is the
 -- source of truth; this is only the resolution-scaled fallback formula,
 -- kept in sync by test_lua_contract.py.
-local THUMB_SECONDS_PER_PHOTO = 0.4
+local THUMB_SECONDS_PER_PHOTO = 0.5
 -- Budget shipped by the App (PLAN.md N3a/b) is a total job timeout; Lua only
 -- waits a FRACTION of it — the App must see a partial result with per-photo
 -- errors before it gives up, or a bare Python-side timeout carries zero
@@ -54,7 +54,7 @@ local UPGRADE_GRACE = 4.0
 -- tmp_thumbs retention: files are purged by age at the start of each fetch.
 -- Must outlive a full Analyze pass (fetch every chunk, THEN measure) — the
 -- App reads a JPEG long after the job that wrote it returned.
-local RETENTION_HOURS = 6
+local RETENTION_HOURS = 0.25 -- 6
 -- Quality of the LrExportSession fallback render (Thumbnails.exportFallback).
 -- Favors measurement accuracy over file size — these get analyzed, not viewed.
 local EXPORT_JPEG_QUALITY = 0.92
@@ -268,7 +268,7 @@ end
     Thumbnails.fetch(photos, width, height, budget)
 
     `photos`: table of LrPhoto (e.g. catalog:getTargetPhotos()).
-    `width`, `height`: max thumbnail size (default 512×512).
+    `width`, `height`: max thumbnail size (default 2048×2048).
     `budget`: total job timeout in seconds, shipped by the App
     (PLAN.md N3, `payload.timeout_s`) — Lua waits `budget * LUA_BUDGET_FRACTION`.
     When absent (older App, MCP tools), falls back to a resolution-scaled
@@ -298,8 +298,8 @@ end
     and whatever is still missing then goes through the export fallback.
 ]]
 function Thumbnails.fetch(photos, width, height, budget)
-    width  = width  or 512
-    height = height or 512
+    width  = width  or 2048
+    height = height or 2048
 
     local dir     = Utils.thumbsDir()
     local wanted  = #photos       -- photos still without a full-size render
@@ -310,7 +310,7 @@ function Thumbnails.fetch(photos, width, height, budget)
         timeout = math.max(THUMB_TIMEOUT, budget * LUA_BUDGET_FRACTION)
     else
         timeout = math.max(THUMB_TIMEOUT,
-            #photos * THUMB_SECONDS_PER_PHOTO * (width * height) / (512 * 512))
+            #photos * THUMB_SECONDS_PER_PHOTO * (width * height) / (2048 * 2048))
     end
     local minLongEdge = math.max(width, height) * SIZE_TOLERANCE
 
@@ -573,8 +573,8 @@ end
     calibration, not for bulk per-photo processing.
 ]]
 function Thumbnails.fetchProbe(adjustments, width, height, settle, budget)
-    width  = width  or 512
-    height = height or 512
+    width  = width  or 2048
+    height = height or 2048
     settle = settle or SETTLE
     local probeStart = os.time()
     local catalog = LrApplication.activeCatalog()

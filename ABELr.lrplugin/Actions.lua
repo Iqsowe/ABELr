@@ -26,7 +26,7 @@ function Actions.connect()
         -- on its own as soon as the App responds, even if the healthcheck timed out.
         PollingLoop.start()
         msg = msg .. '\nBridge active (polling 300ms).'
-        LrDialogs.message('ABELr', msg, ok and 'info' or 'warning')
+        -- LrDialogs.message('ABELr', msg, ok and 'info' or 'warning')
     end)
 end
 
@@ -37,7 +37,7 @@ function Actions.relaunch()
         -- Same here: the bridge always starts and reconnects on its own.
         PollingLoop.start()
         msg = msg .. '\nBridge active (polling 300ms).'
-        LrDialogs.message('ABELr', msg, ok and 'info' or 'warning')
+        -- LrDialogs.message('ABELr', msg, ok and 'info' or 'warning')
     end)
 end
 
