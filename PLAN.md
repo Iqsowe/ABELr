@@ -560,7 +560,7 @@ parametrized case, no test breaks. Real risks are a surviving importer and
   (`gpu_schedule.py:206`) — delete the function, keep the field. Check whether the
   `concurrent.futures` import can go.
 
-- [ ] **D3 — `measure.load_rendered` + `measure.decode_jpeg_file`.** Check whether
+- [x] **D3 — `measure.load_rendered` + `measure.decode_jpeg_file`.** Check whether
   `RenderChannel` (or anything else in `measure.py`) survives; if the module empties out, delete
   it and update ARCHITECTURE §3.
 
