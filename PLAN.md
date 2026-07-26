@@ -277,7 +277,7 @@ bug happened. The App computes the budget; Lua derives its wait from it.
 
 ### N4 — Robustness on the probe path
 
-- [ ] **N4a — Heartbeat during the whole probe.** `HEARTBEAT_TIMEOUT = 5` (`PollingLoop.lua:34`)
+- [x] **N4a — Heartbeat during the whole probe.** `HEARTBEAT_TIMEOUT = 5` (`PollingLoop.lua:34`)
   but the heartbeat only refreshes inside `Thumbnails.fetch`'s wait loop (`:126`). Add
   `_G.ABELR_BRIDGE_HEARTBEAT = os.time()` in the apply loop, the as-shot readback loop, and the
   restore loop; slice the `settle` sleep (`:223`) into ≤1 s steps with a heartbeat between —

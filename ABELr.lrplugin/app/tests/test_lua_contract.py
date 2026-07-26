@@ -82,6 +82,24 @@ def test_thumbnails_fetch_reads_a_budget_argument():
     assert "LUA_BUDGET_FRACTION" in text
 
 
+def _fetch_probe_body(text: str) -> str:
+    start = text.index("function Thumbnails.fetchProbe(")
+    end = text.index("\nreturn Thumbnails", start)
+    return text[start:end]
+
+
+def test_fetch_probe_refreshes_heartbeat_in_every_loop_and_slices_settle():
+    """PLAN.md N4a — a slow probe (apply/readback/restore/settle) must not let
+    the heartbeat go stale, or /bridge reports disconnected mid-probe and
+    blocks the NEXT user action, not just this one."""
+    body = _fetch_probe_body(THUMBNAILS_LUA.read_text(encoding="utf-8"))
+    # apply loop + readback loop + restore loop + the sliced settle wait.
+    assert body.count("_G.ABELR_BRIDGE_HEARTBEAT = os.time()") >= 4
+    # settle sleep sliced into <=1s steps, not one bare LrTasks.sleep(settle).
+    assert "LrTasks.sleep(settle)" not in body
+    assert "math.min(1, settleLeft)" in body
+
+
 def test_polling_loop_forwards_timeout_s_on_both_branches():
     """PLAN.md N3c/N3d — guards against Lua reverting to a hardcoded constant
     while Python keeps shipping a budget in the payload."""

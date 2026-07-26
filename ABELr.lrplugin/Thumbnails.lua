@@ -285,6 +285,10 @@ function Thumbnails.fetchProbe(adjustments, width, height, settle, budget)
                 applyErrors[t.id] = tostring(err or 'apply failed')
                 Utils.logf('fetchProbe: APPLY FAILED for %s: %s', t.id, tostring(err))
             end
+            -- N4a: a slow probe (many photos, or a slow apply) must not let the
+            -- heartbeat go stale — a stale heartbeat makes /bridge report
+            -- disconnected and blocks the NEXT user action, not just this one.
+            _G.ABELR_BRIDGE_HEARTBEAT = os.time()
         end
     end)
 
@@ -295,10 +299,19 @@ function Thumbnails.fetchProbe(adjustments, width, height, settle, budget)
         if ok and s then
             asshotById[t.id] = { temp = s.Temperature, tint = s.Tint }
         end
+        _G.ABELR_BRIDGE_HEARTBEAT = os.time()
     end
 
     -- Lets Lr regenerate the preview before requesting the thumbnails.
-    LrTasks.sleep(settle)
+    -- Sliced into <=1s steps (N4a) so the heartbeat stays fresh through a
+    -- long settle, mirroring Thumbnails.fetch's own wait loop.
+    local settleLeft = settle
+    while settleLeft > 0 do
+        local step = math.min(1, settleLeft)
+        LrTasks.sleep(step)
+        settleLeft = settleLeft - step
+        _G.ABELR_BRIDGE_HEARTBEAT = os.time()
+    end
 
     -- 2. Renders the thumbnails of the probed state. Remaining budget = the
     -- job's total timeout minus what the apply transaction + settle already
@@ -328,6 +341,7 @@ function Thumbnails.fetchProbe(adjustments, width, height, settle, budget)
                         t.id, tostring(err))
                 end
             end
+            _G.ABELR_BRIDGE_HEARTBEAT = os.time()
         end
     end)
 
