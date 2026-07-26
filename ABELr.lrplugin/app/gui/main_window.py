@@ -115,7 +115,8 @@ class MainWindow(QMainWindow):
             "Shot, Exposure 0, HSL 0) — corrects only the PER-PHOTO deviation after\n"
             "subtracting the profile bias; absolute values, idempotent.\n"
             "The 1st Preview after a style change recomputes the anchors in\n"
-            "Lightroom (render_probe, ~1-4 s/photo, then served from cache)."
+            "Lightroom (render_probe, ~4-7 s/photo (median ~5.7), then served\n"
+            "from cache)."
         )
 
         # Correction.
@@ -366,7 +367,7 @@ class MainWindow(QMainWindow):
 
         if op in ("preview", "apply") and not self._checked_axes():
             self._set_actions_enabled(True)
-            self.status_label.setText("Check at least one axis (Exposure, WB or HSL).")
+            self.status_label.setText("Check at least one axis (Exposure, WB, HSL or Calibration).")
             return
 
         # Embedded mode (neutral anchor): no measurement of the current render →
@@ -561,10 +562,16 @@ class MainWindow(QMainWindow):
         if not res.adjustments:
             self._set_actions_enabled(True)
             self._progress_done()
-            self.status_label.setText(
-                "No correction needed — photos already match the profile "
-                "(or no usable target, see notes)."
-            )
+            # PLAN.md U4a: n_targets==0 (every selected photo is a reference)
+            # is a distinct, actionable case — surface it instead of the
+            # generic message, which contradicts the n_targets shown above it.
+            if diag is not None and diag.n_targets == 0 and diag.notes:
+                self.status_label.setText(diag.notes[0])
+            else:
+                self.status_label.setText(
+                    "No correction needed — photos already match the profile "
+                    "(or no usable target, see notes)."
+                )
             return
 
         if self._op == "preview":

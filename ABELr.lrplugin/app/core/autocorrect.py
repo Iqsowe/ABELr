@@ -298,10 +298,23 @@ def plan(
     if mode_embedded:
         reason = "checkbox checked" if forced_embedded else "no usable seed"
         diag.notes.insert(0, f"neutral-anchored embedded-JPEG mode ({reason})")
-        return _plan_embedded(targets, axes, model, dev_by_id, diag, seed_pool)
+        adjustments, diag = _plan_embedded(targets, axes, model, dev_by_id, diag, seed_pool)
+    else:
+        diag.notes.insert(0, f"seeds mode — pool of {len(seed_pool)} seed(s)")
+        adjustments, diag = _plan_seeds(targets, axes, model, seed_pool, dev_by_id, diag)
 
-    diag.notes.insert(0, f"seeds mode — pool of {len(seed_pool)} seed(s)")
-    return _plan_seeds(targets, axes, model, seed_pool, dev_by_id, diag)
+    if not targets and measures:
+        # PLAN.md U4a: n_targets==0 with a non-empty selection is a distinct,
+        # actionable case — every selected photo is a reference — not the
+        # generic "no correction needed" the caller falls back to otherwise.
+        # Inserted last (position 0) so it's the FIRST note the GUI shows,
+        # ahead of the mode-selection note above.
+        diag.notes.insert(
+            0,
+            f"{len(measures)} of {len(measures)} selected photo(s) are "
+            "references — select non-reference photos",
+        )
+    return adjustments, diag
 
 
 # --------------------------------------------------------------------------- #

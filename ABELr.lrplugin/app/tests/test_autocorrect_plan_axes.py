@@ -226,6 +226,26 @@ def test_plan_seeds_notes_photos_with_no_current_render():
     assert any("1 photo(s) with no current render" in note for note in diag.notes)
 
 
+def test_plan_all_selected_are_references_notes_it():
+    """PLAN.md U4a — n_targets==0 with a non-empty selection (every selected
+    photo is a reference) is a distinct, actionable case, not the generic
+    "no correction needed" the caller falls back to when notes is empty."""
+    seeds = [make_measure("s1", is_seed=True), make_measure("s2", is_seed=True)]
+    _adj, diag = ac.plan(seeds, axes=frozenset({"expo"}), model=None, seed_pool=[])
+    assert diag.n_targets == 0
+    assert diag.notes[0] == (
+        "2 of 2 selected photo(s) are references — select non-reference photos"
+    )
+
+
+def test_plan_no_note_when_some_targets_present():
+    seeds = [make_measure("s1", is_seed=True)]
+    target = make_measure("p1", analysis=make_analysis(), raw_tone=make_tone(), asshot_rg=0.5, asshot_bg=0.5)
+    _adj, diag = ac.plan(seeds + [target], axes=frozenset({"expo"}), model=None, seed_pool=[])
+    assert diag.n_targets == 1
+    assert not any("selected photo(s) are references" in note for note in diag.notes)
+
+
 # --------------------------------------------------------------------------- #
 # _plan_seeds — wb axis (matched+refined, unmatched)
 # --------------------------------------------------------------------------- #
