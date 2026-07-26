@@ -354,15 +354,25 @@ own scalars. The fix that targets this is the deferred **G9** item: hoist every 
 tensor, `torch.stack`, one `.cpu()` per image — bit-exact by construction (changes *when* a
 value crosses to host, not how it's computed).
 
-- [ ] **G2 — Confirm the hypothesis before writing code** (it's an inference from reading the
-  source, not a measurement). 15 minutes with `torch.cuda.set_sync_debug_mode('warn')` (counts
-  syncs exactly) or `torch.profiler`, on a real render — what G9's own wording already required.
-  If confirmed: implement the grouped-sync pass, guarded by a bit-exactness test built like
-  `G1a`. Estimated 94 → ~45 ms/photo. If refuted: close G9 with the measurement recorded.
-  Same defect class in `band_stats`: `sat[m]`/`hue[m]`/`chroma[m]`/`lstar[m]` = 4 boolean gathers
-  per band per scope = 64 gathers/photo — same shape as the double gather `G1` removes. Lr: no.
+- [x] **G2 — Confirm the hypothesis before writing code, then implement.** Confirmed via
+  `torch.cuda.set_sync_debug_mode('warn')` on a real-shaped synthetic render (1536×1824 CUDA
+  u8, RTX 2080): **192 device→host syncs / `analyze_rendered_gpu_dual` call, 80.98 ms/call**
+  (measured average over 50 calls after warm-up) — higher than the ~120 inferred from reading
+  the source (boolean-index gathers count too, not just `.item()`/`float()`/`int()`). Implemented
+  the grouped-sync pass in `tone_stats`/`neutral_stats`/`band_stats`
+  (`app/core/render_metrics_gpu.py`): every host-crossing scalar per function (or, for
+  `band_stats`, per whole 8-band loop) collected into tensors and pulled in ONE `.tolist()`;
+  the four per-band gathers (`hue[m]`/`sat[m]`/`chroma[m]`/`lstar[m]`) merged into one
+  `combined_src[m]` gather (same fix shape as `G1`'s double-gather removal). Guarded by a
+  bit-exactness test (`app/tests/test_render_metrics_gpu_sync_grouping.py`, built like `G1a`:
+  frozen legacy re-implementations vs. the new grouped functions, several mask configurations
+  including all-empty bands and an all-false mask) — green both before and after the rewrite.
+  **Re-measured after: 100 syncs/call (-48%), 72.62 ms/call (-10%)** — a real, verified win, short
+  of the plan's optimistic 94→45ms estimate (most bands in a real/random render are non-empty, so
+  the per-band gather count itself doesn't drop, only the post-gather scalar-pull count does).
+  Lr: no.
 
-- [ ] **G3 — Record the "measured, not a problem" list here** (see Origin point 5) so it is not
+- [x] **G3 — Record the "measured, not a problem" list here** (see Origin point 5) so it is not
   re-proposed. 168 ms of cache reads against ~236 s of GPU work = 0.07%. Memoizing
   `_feature_scale` in particular would introduce a staleness invariant (the pool changes between
   calls) for no measurable gain.

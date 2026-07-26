@@ -91,17 +91,30 @@ def _to_hwc_u8(chw_u8: torch.Tensor) -> torch.Tensor:
     return downsample_to_measure_grid(hwc.contiguous())
 
 
+def _q_tensor(x: torch.Tensor, q) -> torch.Tensor:
+    """Tensor-valued sibling of `_q` (PLAN.md G2): same subsampling and empty
+    handling, but returns a tensor instead of forcing an immediate host sync.
+    `q` may be a single float or a sequence (returns one quantile per `q` from
+    a single sort). Callers stack several of these across a whole function (or
+    a whole per-band loop) and pull them to host in ONE combined `.tolist()`
+    — each individual `float(torch.quantile(...))` call is itself a
+    synchronizing op; grouping only changes WHEN a value crosses to host, not
+    HOW it's computed (see test_render_metrics_gpu_sync_grouping.py)."""
+    q_t = torch.as_tensor(q, dtype=torch.float32, device=x.device)
+    if x.numel() == 0:
+        return torch.zeros_like(q_t)
+    if x.numel() > 8_000_000:
+        x = x[:: (x.numel() // 8_000_000 + 1)]
+    return torch.quantile(x.float(), q_t)
+
+
 def _q(x: torch.Tensor, q: float) -> float:
     """Quantile (linear interpolation, like numpy) of a 1D tensor, as float.
 
     `torch.quantile` caps the number of elements (~16M); we subsample at a
     constant stride beyond that (a large render's global percentiles are insensitive to stride).
     """
-    if x.numel() == 0:
-        return 0.0
-    if x.numel() > 8_000_000:
-        x = x[:: (x.numel() // 8_000_000 + 1)]
-    return float(torch.quantile(x.float(), q))
+    return float(_q_tensor(x, q))
 
 
 def _srgb_u8_to_lab(hwc_u8: torch.Tensor) -> torch.Tensor:
@@ -157,14 +170,19 @@ def tone_stats(
     vals = lstar[tonal]
     if vals.numel() == 0:
         vals = lstar.reshape(-1)
+    # G2: every host-crossing scalar grouped into ONE stack + ONE .tolist()
+    # instead of 7 separate .item()-style pulls.
+    quantiles = _q_tensor(vals, [0.5, 0.05, 0.95])
+    scalars = torch.stack([
+        vals.float().mean(), clipped_hi_mask.float().mean(),
+        clipped_lo_mask.float().mean(), tonal.float().mean(),
+    ])
+    median_l, p05_l, p95_l, mean_l, clipped_hi, clipped_lo, tonal_frac = (
+        torch.cat([quantiles, scalars]).tolist()
+    )
     return ToneStats(
-        median_l=_q(vals, 0.5),
-        mean_l=float(vals.mean()),
-        p05_l=_q(vals, 0.05),
-        p95_l=_q(vals, 0.95),
-        clipped_hi=float(clipped_hi_mask.float().mean()),
-        clipped_lo=float(clipped_lo_mask.float().mean()),
-        tonal_frac=float(tonal.float().mean()),
+        median_l=median_l, mean_l=mean_l, p05_l=p05_l, p95_l=p95_l,
+        clipped_hi=clipped_hi, clipped_lo=clipped_lo, tonal_frac=tonal_frac,
     )
 
 
@@ -173,21 +191,28 @@ def tone_stats(
 # --------------------------------------------------------------------------- #
 def neutral_stats(lab: torch.Tensor, mask: torch.Tensor | None = None) -> NeutralStats:
     lstar = lab[..., 0]
-    chroma = torch.hypot(lab[..., 1], lab[..., 2])
+    a_src, b_src = lab[..., 1], lab[..., 2]
+    chroma = torch.hypot(a_src, b_src)
     neutral_mask = (chroma < _NEUTRAL_CHROMA) & (lstar >= _NEUTRAL_L_MIN) & (lstar <= _NEUTRAL_L_MAX)
     if mask is not None:
         neutral_mask &= mask
-    n = int(neutral_mask.sum())
+    # G2: a/b gathered together (ONE boolean-index sync instead of two) — the
+    # gather's own output shape already gives `n` for free, no separate
+    # `int(neutral_mask.sum())` sync needed.
+    ab = torch.stack([a_src, b_src], dim=-1)[neutral_mask]
+    n = ab.shape[0]
     if n == 0:
         return NeutralStats(0.0, 0.0, 0.0, 0.0, 0)
-    a = lab[..., 1][neutral_mask]
-    b = lab[..., 2][neutral_mask]
+    a, b = ab[:, 0], ab[:, 1]
+    a_bias, b_bias, chroma_med, neutral_frac = torch.cat([
+        _q_tensor(a, 0.5).reshape(1),
+        _q_tensor(b, 0.5).reshape(1),
+        _q_tensor(torch.hypot(a, b), 0.5).reshape(1),
+        neutral_mask.float().mean().reshape(1),
+    ]).tolist()
     return NeutralStats(
-        a_bias=_q(a, 0.5),
-        b_bias=_q(b, 0.5),
-        chroma=_q(torch.hypot(a, b), 0.5),
-        neutral_frac=float(neutral_mask.float().mean()),
-        n_neutral=n,
+        a_bias=a_bias, b_bias=b_bias, chroma=chroma_med,
+        neutral_frac=neutral_frac, n_neutral=n,
     )
 
 
@@ -209,25 +234,40 @@ def band_stats(
     band_idx = circ.argmin(dim=-1)
     total = hue.numel()
 
-    out: list[BandStats] = []
+    # G2: same defect class as G1's double gather, x8 bands (48 syncs/call
+    # measured — torch.cuda.set_sync_debug_mode('warn') on a real-shaped
+    # synthetic render). hue/sat/chroma/lstar gathered TOGETHER per band (one
+    # boolean-index sync instead of up to four; the gather's shape gives `n`
+    # for free), and every nonzero band's quantiles/means are stacked across
+    # the WHOLE loop into ONE final `.tolist()` instead of one per band.
+    combined_src = torch.stack([hue, sat, chroma, lstar], dim=-1)  # H,W,4
+    out: list[BandStats | None] = [None] * len(_BAND_NAMES)
+    pending: list[torch.Tensor] = []
+    pending_bands: list[tuple[int, int]] = []  # (band index, n)
     for i, name in enumerate(_BAND_NAMES):
         m = colored & (band_idx == i)
-        n = int(m.sum())
+        sub = combined_src[m]  # n,4
+        n = sub.shape[0]
         if n == 0:
-            out.append(BandStats(name, 0.0, float(rm._BAND_CENTERS[i]), 0.0, 0.0, 0.0, 0.0))
+            out[i] = BandStats(name, 0.0, float(rm._BAND_CENTERS[i]), 0.0, 0.0, 0.0, 0.0)
             continue
-        sat_m = sat[m]
-        out.append(
-            BandStats(
-                name=name,
-                frac=float(n / total),
-                median_hue=_q(hue[m], 0.5),
-                median_chroma=_q(chroma[m], 0.5),
-                median_sat=_q(sat_m, 0.5),
-                sat_clip_frac=float((sat_m >= 0.97).float().mean()),
-                median_l=_q(lstar[m], 0.5),
+        hue_m, sat_m, chroma_m, lstar_m = sub[:, 0], sub[:, 1], sub[:, 2], sub[:, 3]
+        pending.append(torch.stack([
+            _q_tensor(hue_m, 0.5), _q_tensor(chroma_m, 0.5), _q_tensor(sat_m, 0.5),
+            (sat_m >= 0.97).float().mean(), _q_tensor(lstar_m, 0.5),
+        ]))
+        pending_bands.append((i, n))
+
+    if pending:
+        values = torch.stack(pending).tolist()  # (n_nonempty, 5) — ONE sync total
+        for (median_hue, median_chroma, median_sat, sat_clip_frac, median_l), (i, n) in zip(
+            values, pending_bands
+        ):
+            out[i] = BandStats(
+                name=_BAND_NAMES[i], frac=float(n / total),
+                median_hue=median_hue, median_chroma=median_chroma, median_sat=median_sat,
+                sat_clip_frac=sat_clip_frac, median_l=median_l,
             )
-        )
     return out
 
 
