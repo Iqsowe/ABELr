@@ -149,6 +149,12 @@ def _probe_chunk(
         if chw is None:
             failures[p.photo_id] = "jpeg decode failed"
             continue
+        undersized = render_metrics_gpu.reject_if_undersized(
+            width=chw.shape[-1], height=chw.shape[-2]
+        )
+        if undersized is not None:
+            failures[p.photo_id] = undersized
+            continue
         out[p.photo_id] = (t, render_metrics_gpu.analyze_rendered_gpu_dual(chw))
     return out, failures
 

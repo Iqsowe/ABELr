@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
+import torch
 
-from app.core import render_metrics, sharpness
+from app.core import render_metrics, render_metrics_gpu, sharpness
 
 # Native-resolution-like canvas, well above MEASURE_LONG_EDGE (2048) — the
 # real-world scale of a RAW/embedded in-camera JPEG (PLAN.md R evidence: RAW
@@ -79,3 +81,44 @@ def test_sharp_zone_tracks_subject_after_measurement_grid_downsample():
         f"sharp zone ({sharp.median_l:.1f} L*) drifted away from the true "
         f"subject lightness ({subject_only.median_l:.1f} L*)"
     )
+
+
+# --------------------------------------------------------------------------- #
+# R1 — the measure-grid invariant: a render below the grid is a failure
+# --------------------------------------------------------------------------- #
+def test_reject_if_undersized_below_grid():
+    reason = render_metrics_gpu.reject_if_undersized(width=968, height=726)
+    assert reason is not None
+    assert "968" in reason and "726" in reason
+    assert str(render_metrics.MEASURE_LONG_EDGE) in reason
+
+
+def test_reject_if_undersized_exactly_at_grid_accepted():
+    assert render_metrics_gpu.reject_if_undersized(
+        width=render_metrics.MEASURE_LONG_EDGE, height=1536
+    ) is None
+
+
+def test_reject_if_undersized_above_grid_accepted():
+    # Larger tier than requested — downsample_to_measure_grid brings it back
+    # down, that's correct behavior, not a rejection.
+    assert render_metrics_gpu.reject_if_undersized(width=3504, height=2336) is None
+
+
+def test_undersized_render_rejected_then_oversized_downsampled_to_grid():
+    """End-to-end: a 484px render is rejected by reject_if_undersized; a 3504px
+    render is accepted by it, then downsample_to_measure_grid brings it down
+    to exactly the grid; an exactly-2048 render needs no resampling."""
+    long_edge = render_metrics.MEASURE_LONG_EDGE
+
+    assert render_metrics_gpu.reject_if_undersized(width=484, height=484) is not None
+
+    big = torch.zeros((3504, 5000, 3), dtype=torch.uint8)
+    assert render_metrics_gpu.reject_if_undersized(width=big.shape[1], height=big.shape[0]) is None
+    resized = render_metrics_gpu.downsample_to_measure_grid(big)
+    assert max(resized.shape[0], resized.shape[1]) == long_edge
+
+    exact = torch.zeros((long_edge, 1536, 3), dtype=torch.uint8)
+    assert render_metrics_gpu.reject_if_undersized(width=exact.shape[1], height=exact.shape[0]) is None
+    same = render_metrics_gpu.downsample_to_measure_grid(exact)
+    assert same is exact  # identity — no resampling needed

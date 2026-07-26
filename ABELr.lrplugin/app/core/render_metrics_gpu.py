@@ -77,6 +77,27 @@ def downsample_to_measure_grid(
     return resized.squeeze(0).round().clamp(0, 255).to(torch.uint8).permute(1, 2, 0).contiguous()
 
 
+def reject_if_undersized(
+    width: int, height: int, long_edge: int = MEASURE_LONG_EDGE
+) -> str | None:
+    """The measure-grid invariant (PLAN.md R1) — `downsample_to_measure_grid`'s
+    missing counterpart: that function never upsamples, but nothing enforced
+    the other direction. `requestJpegThumbnail` ignores the requested size and
+    serves whichever pyramid tier Lr has cached — silently measuring a 484px
+    render as if it were the 2048 grid defeated `ANALYSIS_VERSION`
+    ("v7-measure-grid") without anyone noticing (67% of renders were below
+    grid on the live catalog, PLAN.md Origin point 3).
+
+    Returns a rejection reason if `max(width, height) < long_edge`, else
+    `None`. A render requested at `long_edge` but served at a LARGER tier is
+    NOT rejected (it gets downsampled back down by `downsample_to_measure_grid`
+    — correct, not a failure).
+    """
+    if max(width, height) < long_edge:
+        return f"undersized render {width}×{height} (requested {long_edge})"
+    return None
+
+
 def _to_hwc_u8(chw_u8: torch.Tensor) -> torch.Tensor:
     """nvJPEG/CPU outputs CHW uint8; we work in HWC. Force RGB 3 channels on the
     current device, then normalize to the common measurement grid (PLAN.md R2)."""

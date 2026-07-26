@@ -126,6 +126,10 @@ def _measure_neutral(thumb) -> render_metrics_gpu.NeutralStats | None:
     if chw is None:
         print("  [!] unreadable thumbnail")
         return None
+    undersized = render_metrics_gpu.reject_if_undersized(width=chw.shape[-1], height=chw.shape[-2])
+    if undersized is not None:
+        print(f"  [!] {undersized}")
+        return None
     analysis = render_metrics_gpu.analyze_rendered_gpu(chw)
     neutral = analysis.neutral
     if neutral is None or neutral.neutral_frac < _MIN_NEUTRAL_FRAC:

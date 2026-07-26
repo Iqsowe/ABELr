@@ -381,7 +381,7 @@ value crosses to host, not how it's computed).
 
 ## R — Measure-grid invariant + clean re-measure
 
-- [ ] **R1 — The invariant: a render below the grid is a failure, not a measurement.** Single
+- [x] **R1 — The invariant: a render below the grid is a failure, not a measurement.** Single
   enforcement point on the App side, after decode and before any measurement: if
   `max(h, w) < MEASURE_LONG_EDGE`, reject with reason
   `f"undersized render {w}×{h} (requested {long_edge})"`. Applies to the three paths that consume

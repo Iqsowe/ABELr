@@ -95,6 +95,10 @@ async def _calibrate_band_axis(
         if chw is None:
             print("  [!] unreadable thumbnail")
             continue
+        undersized = render_metrics_gpu.reject_if_undersized(width=chw.shape[-1], height=chw.shape[-2])
+        if undersized is not None:
+            print(f"  [!] {undersized}")
+            continue
         analysis = render_metrics_gpu.analyze_rendered_gpu(chw)
         band = next((b for b in analysis.bands if b.name == band_name), None) if analysis.bands else None
         if band is None or not render_metrics.band_is_reliable(band):
@@ -119,6 +123,10 @@ async def _measure_neutral(probe: McpProbe, photo_id: str, develop: dict, settle
     chw = gpu_jpeg.decode_file(thumb["thumbnail_path"])
     if chw is None:
         print("  [!] unreadable thumbnail")
+        return None
+    undersized = render_metrics_gpu.reject_if_undersized(width=chw.shape[-1], height=chw.shape[-2])
+    if undersized is not None:
+        print(f"  [!] {undersized}")
         return None
     analysis = render_metrics_gpu.analyze_rendered_gpu(chw)
     neutral = analysis.neutral

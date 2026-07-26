@@ -26,6 +26,7 @@ stays GPU-only, see its header).
 
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -37,6 +38,8 @@ from . import embedded_jpeg, gpu, gpu_jpeg, gpu_raw, render_metrics_gpu
 from .embedded_jpeg import EmbeddedExtract, RawReference
 from .gpu_raw import RawBayer, RawGpuResult
 from .pipeline import RenderAnalysisDual
+
+_log = logging.getLogger("abelr.gpu_schedule")
 
 Progress = Optional[Callable[[int, int], None]]
 
@@ -252,6 +255,14 @@ def analyze_render_blobs(
     for wi, group in enumerate(_chunks(items, chunk)):
         decoded = _with_oom_retry(gpu_jpeg.decode_blobs, [blob for _, blob in group])
         for (key, _blob), chw in zip(group, decoded):
+            undersized = (
+                render_metrics_gpu.reject_if_undersized(width=chw.shape[-1], height=chw.shape[-2])
+                if chw is not None else None
+            )
+            if undersized is not None:
+                # PLAN.md R1: measured, never silently accepted below the grid.
+                _log.warning("analyze_render_blobs: skipping %s — %s", key, undersized)
+                chw = None
             out[key] = (
                 _with_oom_retry(render_metrics_gpu.analyze_rendered_gpu_dual, chw)
                 if chw is not None else None

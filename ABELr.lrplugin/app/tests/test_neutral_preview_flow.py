@@ -1,16 +1,19 @@
 """PLAN.md N1c — `ensure_neutral_previews` end-to-end via `FakePlugin`, no HTTP,
 no Qt, no GPU/RAW (gpu_jpeg.decode_file / analyze_rendered_gpu_dual stubbed).
 
-R1 (undersized-render rejection) and R3 haven't landed yet (PLAN.md order:
-N before G before R) — no case for it here; it belongs with R1's own test
-extension once the grid-enforcement helper exists.
+R3 (full re-measure) is Lr-required, not applicable here. R1's undersized-
+render rejection case lives below (`test_undersized_render_rejected`), now
+that `render_metrics_gpu.reject_if_undersized` exists.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.core import cache as cachemod
+from app.core import render_metrics
 from app.core.pipeline import RenderAnalysisDual
 from app.gui import neutral_preview_worker as npw
 from app.server.job_queue import JobQueue
@@ -50,7 +53,11 @@ def plugin(queue):
 @pytest.fixture(autouse=True)
 def _stub_gpu_and_fast_timeouts(monkeypatch):
     dual = RenderAnalysisDual(sharp=make_analysis(), glob=make_analysis(), mask_sharp_frac=0.5)
-    monkeypatch.setattr(npw.gpu_jpeg, "decode_file", lambda path: object())
+    # Shape-only stand-in (R1 needs .shape[-1]/.shape[-2] at grid size to pass
+    # reject_if_undersized; content is never read, analyze_rendered_gpu_dual
+    # below is stubbed to ignore it).
+    fake_chw = SimpleNamespace(shape=(3, render_metrics.MEASURE_LONG_EDGE, render_metrics.MEASURE_LONG_EDGE))
+    monkeypatch.setattr(npw.gpu_jpeg, "decode_file", lambda path: fake_chw)
     monkeypatch.setattr(npw.render_metrics_gpu, "analyze_rendered_gpu_dual", lambda chw: dual)
     # Real budget constants (30s floor, ~10.5s/photo at 2048x2048) would make a
     # no-response test take 30s+ for real — this is control-flow testing, not
@@ -83,6 +90,25 @@ def test_happy_path_all_probes_succeed(conn, plugin):
     failed, msg = npw._summarize(outcome, len(photos))
     assert failed is False
     assert "20 recomputed" in msg
+
+
+def test_undersized_render_rejected(conn, plugin, monkeypatch):
+    """PLAN.md R1 — a render below MEASURE_LONG_EDGE is a failure, never a
+    silently-accepted measurement: requestJpegThumbnail ignores the requested
+    size and serves whichever pyramid tier Lr has cached."""
+    undersized_chw = SimpleNamespace(shape=(3, 484, 484))
+    monkeypatch.setattr(npw.gpu_jpeg, "decode_file", lambda path: undersized_chw)
+    plugin.render_probe_hook = render_probe_ok()
+    photos = _photos(3)
+    with plugin.run_in_thread():
+        outcome = npw.ensure_neutral_previews(photos, conn, chunk_size=8)
+
+    assert outcome.n_refreshed == 0
+    assert outcome.by_id == {}
+    assert len(outcome.failures) == 3
+    for reason in outcome.failures.values():
+        assert "undersized render" in reason
+        assert "484" in reason
 
 
 def test_all_timeout_is_reported_as_failed_not_fake_success(conn, plugin):
