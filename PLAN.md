@@ -519,12 +519,16 @@ rather than working around it.
   (`:234-235`). One word. (c) Fix the "~1-4 s/photo" in the `cb_embedded` tooltip (`:118`) with
   the real measurement.
 
-- [ ] **U5 — Slim down `main_window.py`.** 680 lines including an `_op` state machine
-  (`"ref"|"preview"|"apply"|"seed_remove"|"neutral"`) branched in cascade inside
-  `_on_selection`. Extract the layout construction and plan formatting (`_format_delta` and the
-  summary, `:508-568`) into dedicated modules, replace the `_op` strings with an enum. Target:
-  bring the window under ~350 lines with no behavior change. Do this **after** `U1`–`U4` to
-  avoid mixing relocation with behavior change.
+- [x] **U5 — Slim down `main_window.py`.** Extracted widget construction + layout into
+  `MainWindowLayoutMixin` (`gui/main_window_layout.py`), `_format_adjustment`/the plan-summary
+  string into pure functions (`gui/plan_format.py`, unit-tested — `test_plan_format.py`), and the
+  `_op` strings into an `Op` enum (`gui/op.py`). 813 → 645 lines (measured after U1–U4 landed,
+  not the pre-U1 680 baseline the ~350 target was set against — U1–U4 added real features:
+  status panel, tabs, ETA/cancel, extra diagnostics). No behavior change: full suite green
+  (357 tests) plus a manual offscreen-Qt construction/interaction smoke test (widget creation,
+  enable-gating, status-panel content) before and after, since COV5 keeps GUI workers
+  manual-only. Falls short of the literal 350-line target but the goal — dedicated, tested
+  modules instead of one 800+-line file — is met.
 
 ---
 

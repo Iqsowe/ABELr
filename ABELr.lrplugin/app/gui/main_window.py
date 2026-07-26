@@ -32,42 +32,29 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtWidgets import (
-    QCheckBox,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QListWidget,
-    QMainWindow,
-    QMessageBox,
-    QProgressBar,
-    QPushButton,
-    QTabWidget,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QMainWindow, QMessageBox
 
 from ..core import cache as cachemod
 from ..core import render_metrics, response
 from ..server import budget as budgetmod
-
-# U3: above this estimated wall-clock, confirm before launching a probe-heavy
-# neutral-anchor run rather than silently committing the user to it.
-_ETA_CONFIRM_THRESHOLD_S = 300.0
 from ..server.job_queue import job_queue
 from ..server.models import JobResult, JobType
 from . import status as statusmod
 from .autocorrect_worker import AutoCorrectResult, AutoCorrectWorker
 from .fresh_render_worker import FreshRenderWorker
-from .log_bridge import QtLogHandler
+from .main_window_layout import MainWindowLayoutMixin
 from .neutral_preview_worker import NeutralPreviewWorker
 from .job_worker import JobWorker
+from .op import Op
+from .plan_format import format_adjustment, format_plan_summary
 
 _AXIS_LABELS = {"expo": "Exposure", "wb": "WB", "hsl": "HSL", "calib": "Calibration"}
+# U3: above this estimated wall-clock, confirm before launching a probe-heavy
+# neutral-anchor run rather than silently committing the user to it.
+_ETA_CONFIRM_THRESHOLD_S = 300.0
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow, MainWindowLayoutMixin):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("ABELr — auto correction")
@@ -90,168 +77,14 @@ class MainWindow(QMainWindow):
 
         # Minimal state machine: the current op, the selection and the fresh
         # render are kept between hops (selection → render → measurement).
-        self._op: str | None = None                 # "ref"|"preview"|"apply"|"seed_remove"|"neutral"
+        self._op: Op | None = None
         self._photos: list = []                     # PhotoResult of the current selection
         self._thumb_paths: dict[str, str] = {}       # uuid → fresh rendered JPEG (plugin)
         # Preview plan reusable by Apply (same selection).
         self._pending_adjustments: list | None = None
         self._pending_ids: frozenset[str] = frozenset()
 
-        self.bridge_label = QLabel()
-        self.status_label = QLabel("Ready. Select photos in Lightroom.")
-        self.plan_summary_label = QLabel("")
-        self.plan_summary_label.setStyleSheet("font-weight: bold;")
-
-        # Progress bar for image analysis / measurement operations. Hidden at
-        # rest; determinate when a worker provides (done, total), busy (animated)
-        # otherwise.
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setVisible(False)
-
-        # Diagnostics — a status-bar item, not a workflow step (U1).
-        self.test_btn = QPushButton("Test bridge")
-
-        # 1. Catalog.
-        self.analyze_catalog_btn = QPushButton("Analyze Catalog")
-
-        # 2. References (seeds).
-        self.mark_refs_btn = QPushButton("Mark + analyze references")
-        self.unmark_refs_btn = QPushButton("Remove from references")
-
-        # 3. Correction — embedded-mode-only prep step, relabeled to say what
-        # it does (U1); enabled only when cb_embedded is checked.
-        self.calibrate_neutral_btn = QPushButton("Prepare neutral anchors")
-        self.calibrate_neutral_btn.setToolTip(
-            "Embedded mode only: pre-renders the neutral anchor (WB As Shot, "
-            "Exposure 0, HSL 0) for the current selection so the next Preview/"
-            "Apply doesn't pay for it inline."
-        )
-        # U3: cooperative cancel for the probe-heavy neutral-anchor run —
-        # enabled only while that specific worker is active.
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setEnabled(False)
-        self.cancel_btn.setToolTip("Stops after the chunk currently in flight finishes.")
-
-        # Axes + reference.
-        self.cb_expo = QCheckBox("Exposure")
-        self.cb_wb = QCheckBox("WB")
-        self.cb_hsl = QCheckBox("HSL")
-        self.cb_calib = QCheckBox("Calibration")
-        for cb in (self.cb_expo, self.cb_wb, self.cb_hsl, self.cb_calib):
-            cb.setChecked(True)
-        self.cb_embedded = QCheckBox("Ref = embedded JPEG")
-        self.cb_embedded.setToolTip(
-            "Unchecked: target = k-NN over the seeds whose RAW analysis (sharp\n"
-            "area) is closest (uses their already-edited preview as the style\n"
-            "reference).\n"
-            "Checked: target = camera JPEG, anchored on the neutral render (WB As\n"
-            "Shot, Exposure 0, HSL 0) — corrects only the PER-PHOTO deviation after\n"
-            "subtracting the profile bias; absolute values, idempotent.\n"
-            "The 1st Preview after a style change recomputes the anchors in\n"
-            "Lightroom (render_probe, ~4-7 s/photo (median ~5.7), then served\n"
-            "from cache)."
-        )
-
-        # Correction.
-        self.preview_btn = QPushButton("Preview")
-        self.preview_btn.setToolTip("Measures + plans, shows the deltas WITHOUT applying.")
-        self.apply_btn = QPushButton("Apply")
-        self.apply_btn.setToolTip(
-            "Applies the Preview plan if one exists, otherwise measures + plans + applies."
-        )
-
-        # U2: status panel (read-only grid, refreshed on the bridge timer and
-        # after every operation) + Plan/Log tabs — split out of the single
-        # `photo_list` dumping ground the plan lines, diagnostics/warnings and
-        # the L2 log stream used to share.
-        self.status_panel = QListWidget()
-        self.status_panel.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        self.status_panel.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # read-only display
-        self.status_panel.setMaximumHeight(140)
-
-        self.photo_list = QListWidget()
-        self.log_list = QListWidget()
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self.photo_list, "Plan")
-        self.tabs.addTab(self.log_list, "Log")
-
-        self._log_handler = QtLogHandler(level=logging.WARNING)
-        self._log_handler.record.connect(self.log_list.addItem)
-        logging.getLogger("abelr").addHandler(self._log_handler)
-
-        self.test_btn.clicked.connect(self._on_check)
-        self.analyze_catalog_btn.clicked.connect(self._on_analyze_catalog)
-        self.mark_refs_btn.clicked.connect(lambda: self._begin("ref"))
-        self.unmark_refs_btn.clicked.connect(lambda: self._begin("seed_remove"))
-        self.calibrate_neutral_btn.clicked.connect(lambda: self._begin("neutral"))
-        self.cancel_btn.clicked.connect(self._on_cancel_click)
-        self.preview_btn.clicked.connect(lambda: self._begin("preview"))
-        self.apply_btn.clicked.connect(self._on_apply_click)
-        self.cb_embedded.toggled.connect(self._refresh_neutral_btn_enabled)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.bridge_label)
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.progress_bar)
-
-        # U1: numbered groups reflecting the real usage order (previously the
-        # order lived only in the module docstring, invisible to the user).
-        group1 = QGroupBox("1. Catalog")
-        g1_row = QHBoxLayout(group1)
-        g1_row.addWidget(self.analyze_catalog_btn)
-        g1_row.addStretch()
-        layout.addWidget(group1)
-
-        group2 = QGroupBox("2. References")
-        g2_row = QHBoxLayout(group2)
-        g2_row.addWidget(self.mark_refs_btn)
-        g2_row.addWidget(self.unmark_refs_btn)
-        g2_row.addStretch()
-        layout.addWidget(group2)
-
-        group3 = QGroupBox("3. Correction")
-        g3 = QVBoxLayout(group3)
-        axes_row = QHBoxLayout()
-        axes_row.addWidget(QLabel("Axes:"))
-        axes_row.addWidget(self.cb_expo)
-        axes_row.addWidget(self.cb_wb)
-        axes_row.addWidget(self.cb_hsl)
-        axes_row.addWidget(self.cb_calib)
-        axes_row.addSpacing(16)
-        axes_row.addWidget(self.cb_embedded)
-        axes_row.addStretch()
-        g3.addLayout(axes_row)
-        actions_row = QHBoxLayout()
-        actions_row.addWidget(self.calibrate_neutral_btn)
-        actions_row.addWidget(self.cancel_btn)
-        actions_row.addSpacing(16)
-        actions_row.addWidget(self.preview_btn)
-        actions_row.addWidget(self.apply_btn)
-        actions_row.addStretch()
-        g3.addLayout(actions_row)
-        layout.addWidget(group3)
-
-        layout.addWidget(QLabel("Status:"))
-        layout.addWidget(self.status_panel)
-        layout.addWidget(self.plan_summary_label)
-        layout.addWidget(self.tabs)
-
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
-
-        # "Test bridge" is a diagnostic, not a workflow step (U1) — status bar.
-        self.statusBar().addPermanentWidget(self.test_btn)
-
-        self._refresh_neutral_btn_enabled()
-
-        self._bridge_timer = QTimer(self)
-        self._bridge_timer.timeout.connect(self._refresh_bridge)
-        self._bridge_timer.timeout.connect(self._refresh_status)
-        self._bridge_timer.start(1000)
-        self._refresh_bridge()
-        self._refresh_status()
+        self._build_ui()  # widget construction + layout (PLAN.md U5) — main_window_layout.py
 
     # ------------------------------------------------------------------ #
     def _refresh_bridge(self) -> None:
@@ -421,7 +254,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # Step 1: fetch the Lr selection (common to all operations)
     # ------------------------------------------------------------------ #
-    def _begin(self, op: str) -> None:
+    def _begin(self, op: Op) -> None:
         if not self._require_bridge():
             return
         self._op = op
@@ -449,14 +282,14 @@ class MainWindow(QMainWindow):
             self._catalog_path = catalog_path
         op = self._op
 
-        if op == "seed_remove":
+        if op == Op.SEED_REMOVE:
             self._apply_seed_flag(result.photos, False)
             self._set_actions_enabled(True)
             self._progress_done()  # DB flag only, no image measurement
             self._refresh_status()
             return
 
-        if op == "neutral":
+        if op == Op.NEUTRAL:
             n = len(result.photos)
             # U3: ETA from the same budget the worker itself uses, confirm
             # before committing the user to a long probe-heavy run.
@@ -488,10 +321,10 @@ class MainWindow(QMainWindow):
             return
 
         # ref | preview | apply: mark first (ref), then fresh render + measurement.
-        if op == "ref":
+        if op == Op.REF:
             self._apply_seed_flag(result.photos, True)
 
-        if op in ("preview", "apply") and not self._checked_axes():
+        if op in (Op.PREVIEW, Op.APPLY) and not self._checked_axes():
             self._set_actions_enabled(True)
             self.status_label.setText("Check at least one axis (Exposure, WB, HSL or Calibration).")
             return
@@ -499,7 +332,7 @@ class MainWindow(QMainWindow):
         # Embedded mode (neutral anchor): no measurement of the current render →
         # no fresh render to request from the plugin (the anchor comes from the
         # cache/render_probe).
-        if op in ("preview", "apply") and self.cb_embedded.isChecked():
+        if op in (Op.PREVIEW, Op.APPLY) and self.cb_embedded.isChecked():
             self._thumb_paths = {}
             self._launch_measure(result.photos)
             return
@@ -549,7 +382,7 @@ class MainWindow(QMainWindow):
 
     def _launch_measure(self, photos: list) -> None:
         op = self._op
-        if op == "ref":
+        if op == Op.REF:
             self.status_label.setText(
                 f"{len(photos)} reference(s) — RAW analysis + camera JPEG + render…"
             )
@@ -577,7 +410,7 @@ class MainWindow(QMainWindow):
             # recompute a delta on a stale render. Preview: the PreviewJPEG
             # cache is enough. Embedded mode: no effect (no measurement of the
             # current render).
-            force_fresh_preview=(op == "apply"),
+            force_fresh_preview=(op == Op.APPLY),
         )
         self._auto_worker.progress.connect(self.status_label.setText)
         self._auto_worker.progress_count.connect(self._on_progress_count)
@@ -635,23 +468,6 @@ class MainWindow(QMainWindow):
         self.status_label.setText(message)
         self._refresh_status()
 
-    def _format_adjustment(self, adj) -> str:
-        """Preview line "key: current → target (delta)" — embedded values are
-        absolute, so the gap vs the current setting is the useful info."""
-        current = next(
-            (p.current_develop or {} for p in self._photos if p.photo_id == adj.photo_id), {}
-        )
-        parts = []
-        for k, v in adj.develop.items():
-            cur = current.get(k)
-            if isinstance(v, (int, float)) and isinstance(cur, (int, float)):
-                parts.append(f"{k}: {cur:g} → {v:g} (Δ{v - cur:+g})")
-            elif isinstance(v, (int, float)):
-                parts.append(f"{k}: ? → {v:g}")
-            else:
-                parts.append(f"{k}: {cur} → {v}")
-        return f"  {adj.photo_id[:8]} → " + ", ".join(parts)
-
     def _on_plan_ready(self, res: AutoCorrectResult) -> None:
         if res.camera or res.profile:
             self._last_camera, self._last_profile = res.camera, res.profile
@@ -659,14 +475,9 @@ class MainWindow(QMainWindow):
         diag = res.diagnostics
         self.photo_list.clear()
         if diag is not None:
-            mode_label = "embedded (neutral anchor)" if diag.mode == "embedded" else diag.mode
-            summary = (
-                f"Mode {mode_label} — {diag.n_seeds} seed(s), {diag.n_targets} target(s), "
-                f"{res.n_measured} measured, {res.n_skipped} not measurable."
+            self.plan_summary_label.setText(
+                format_plan_summary(diag, res.n_measured, res.n_skipped)
             )
-            if diag.n_low_confidence:
-                summary += f"  ⚠ {diag.n_low_confidence} low-confidence match(es)"
-            self.plan_summary_label.setText(summary)
             for note in res.notes:
                 self.photo_list.addItem(f"  • {note}")
             for note in diag.notes:
@@ -686,8 +497,11 @@ class MainWindow(QMainWindow):
                 f"\"Mark + analyze references\" on your reference shots first.",
             )
 
+        develop_by_id = {p.photo_id: (p.current_develop or {}) for p in self._photos}
         for adj in res.adjustments[:10]:
-            self.photo_list.addItem(self._format_adjustment(adj))
+            self.photo_list.addItem(
+                format_adjustment(adj, develop_by_id.get(adj.photo_id, {}))
+            )
         if len(res.adjustments) > 10:
             self.photo_list.addItem(f"  … +{len(res.adjustments) - 10} photo(s)")
 
@@ -706,7 +520,7 @@ class MainWindow(QMainWindow):
                 )
             return
 
-        if self._op == "preview":
+        if self._op == Op.PREVIEW:
             self._pending_adjustments = res.adjustments
             self._pending_ids = frozenset(p.photo_id for p in self._photos)
             self._set_actions_enabled(True)
@@ -717,8 +531,8 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # op == "apply": apply directly the plan just computed (the bar stays
-        # shown until the plugin finishes applying it).
+        # op == Op.APPLY: apply directly the plan just computed (the bar
+        # stays shown until the plugin finishes applying it).
         self._submit_apply(res.adjustments)
 
     # ------------------------------------------------------------------ #
@@ -740,7 +554,7 @@ class MainWindow(QMainWindow):
             self._worker.failed.connect(self._on_auto_failed)
             self._worker.start()
         else:
-            self._begin("apply")
+            self._begin(Op.APPLY)
 
     def _on_apply_selection_check(self, result: JobResult) -> None:
         adjustments = self._pending_adjustments
@@ -757,7 +571,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(
                 "Selection changed since the Preview — new measurement + planning…"
             )
-            self._begin("apply")
+            self._begin(Op.APPLY)
             return
         self._submit_apply(adjustments)
 
