@@ -139,12 +139,16 @@ lives in the DB via `cache`, matching via `seed_match`). `core/prediction.py` ne
 
 | Module | Status | Role |
 |---|---|---|
-| `main_window.py` | live | Seeds / analyze / apply-per-axis / calibrate-neutral buttons, bridge indicator |
+| `main_window.py` | live | Seeds / analyze / apply-per-axis / calibrate-neutral buttons, bridge indicator; delegates layout to `main_window_layout.py` |
+| `main_window_layout.py` | live | `MainWindowLayoutMixin._build_ui` — widget construction + layout, split out of `main_window.py` (PLAN.md U5) |
+| `plan_format.py` | live | Pure plan-line/summary string formatting, extracted out of `MainWindow` (PLAN.md U5) |
+| `op.py` | live | `Op` enum for `MainWindow`'s current-operation state (PLAN.md U5) |
+| `status.py` | live | `build_status`/`format_status_lines` — persistent status panel, pure (PLAN.md U2) |
+| `log_bridge.py` | live | `QtLogHandler` — bridges the `abelr` logger to the GUI's Log tab (PLAN.md L2/U2) |
 | `job_worker.py` | live | Generic QThread: submits a job, waits for the plugin result |
 | `autocorrect_worker.py` | live | QThread: RAW+in-camera JPEG+preview (sharp area) → cache → `autocorrect.plan`; `analyze_only` mode |
 | `neutral_preview_worker.py` | live | QThread: neutral anchors (`render_probe`) → `NeutralPreviewJPEG` cache |
 | `fresh_render_worker.py` | live | Forces the plugin to render a fresh thumbnail before a measurement (bypasses stale-preview risk) |
-| `photo_panel.py` / `analysis_panel.py` | **STUB** | Empty, reserved (previews / histograms) |
 
 > `analysis_worker.py` removed (PLAN step 1, Fable 5 review) — no non-reappearance guard test
 > currently exists for it; `app/tests/test_smoke_import.py` catches broken imports in any
@@ -282,7 +286,6 @@ Apply on an up-to-date preview gives a delta ≈ 0.
   stays stale. Planned but unwired fallback: `RenderChannel.EXPORT` channel
   (`Thumbnails.fetchProbeExport` + `render_probe_export` job). To validate under real conditions
   (2nd-Preview convergence ≈ 0). Cf. PLAN.md step 8.
-- GUI panels (`photo_panel`, `analysis_panel`) at stub stage.
 
 ---
 

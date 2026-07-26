@@ -564,7 +564,7 @@ parametrized case, no test breaks. Real risks are a surviving importer and
   `RenderChannel` (or anything else in `measure.py`) survives; if the module empties out, delete
   it and update ARCHITECTURE §3.
 
-- [ ] **D4 — `gui/photo_panel.py` and `gui/analysis_panel.py`.** Zero importers confirmed.
+- [x] **D4 — `gui/photo_panel.py` and `gui/analysis_panel.py`.** Zero importers confirmed.
   Delete both — **after `U2`**, which delivers what they promised. Same commit: update
   ARCHITECTURE §3 (gui table) and §8, and the deferred backlog below. `check_dead_paths` won't
   fire (bare filenames without `/` are skipped, `check_docs.py:131`) — **doc freshness here is
